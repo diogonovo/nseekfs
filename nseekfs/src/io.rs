@@ -1,20 +1,19 @@
-use std::error::Error;
 use std::fs::File;
-use std::io::BufReader;
-use csv::ReaderBuilder;
+use std::io::{BufRead, BufReader};
+use std::error::Error;
 
 pub fn load_csv_f32(path: &str) -> Result<Vec<Vec<f32>>, Box<dyn Error>> {
     let file = File::open(path)?;
-    let mut rdr = ReaderBuilder::new().has_headers(false).from_reader(BufReader::new(file));
-    let mut vectors = Vec::new();
+    let reader = BufReader::new(file);
+    let mut data = Vec::new();
 
-    for result in rdr.records() {
-        let record = result?;
-        let row = record.iter()
-            .map(|x| x.parse::<f32>())
-            .collect::<Result<Vec<f32>, _>>()?;
-        vectors.push(row);
+    for line in reader.lines() {
+        let line = line?;
+        let row: Vec<f32> = line.split(',')
+            .map(|s| s.parse::<f32>().unwrap_or(0.0))
+            .collect();
+        data.push(row);
     }
 
-    Ok(vectors)
+    Ok(data)
 }
