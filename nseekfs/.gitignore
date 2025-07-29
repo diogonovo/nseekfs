@@ -1,0 +1,10 @@
+target/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+*.so
+*.dll
+*.dylib
+*.log
