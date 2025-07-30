@@ -1,6 +1,6 @@
 import numpy as np
 
-N = 100_000  # número de vetores
+N = 500_000  # número de vetores
 D = 768        # dimensão dos vetores
 FICHEIRO = "data2.csv"
 

@@ -9,3 +9,10 @@ git push
 
 git status       # mostra ficheiros alterados
 git diff         # mostra diferenças linha a linha
+
+python -m venv .venv
+.venv\Scripts\activate
+pip install maturin
+maturin develop
+
+pip install numpy
