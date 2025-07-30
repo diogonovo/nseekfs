@@ -1,53 +1,85 @@
 use pyo3::prelude::*;
-use crate::engine::SearchEngine;
+use pyo3::types::PyList;
+use pyo3::exceptions::PyValueError;
 
-mod io;
+use std::fs::File;
+use std::path::Path;
+
 mod engine;
+mod io;
+
+use engine::SearchEngine;
+use io::{load_csv_bin, save_bin};
 
 #[pyclass]
-struct PySearchEngine {
-    inner: SearchEngine,
+pub struct PySearchEngine {
+    engine: SearchEngine,
 }
 
 #[pymethods]
 impl PySearchEngine {
     #[new]
-    fn new(path: String) -> PyResult<Self> {
-        let engine = SearchEngine::load_auto(&path)
-            .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
-        Ok(PySearchEngine { inner: engine })
+    pub fn new(path: &str) -> PyResult<Self> {
+        let engine = load_csv_bin(path).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(Self { engine })
     }
 
-    fn top_k_similar(&self, index: usize, k: usize) -> Vec<(usize, f32)> {
-        self.inner.top_k_similar(index, k)
+    #[staticmethod]
+    pub fn from_vectors(py: Python<'_>, obj: &PyAny) -> PyResult<Self> {
+        let list: Vec<Vec<f32>> = if obj.is_instance_of::<PyList>() {
+            obj.extract()?
+        } else {
+            let np = obj.call_method1("astype", ("float32",))?;
+            np.extract()?
+        };
+
+        let mut engine = SearchEngine::new();
+        for v in list {
+            engine.add(v);
+        }
+        Ok(Self { engine })
     }
 
-    fn top_k_query(&self, vector: Vec<f32>, k: usize, normalize: bool) -> PyResult<Vec<(usize, f32)>> {
-        self.inner.top_k_query(&vector, k, normalize)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))
+    pub fn top_k_query(&self, py: Python<'_>, query: Vec<f32>, k: usize) -> PyResult<Vec<(usize, f32)>> {
+        let results = self.engine.top_k(&query, k);
+        Ok(results)
     }
 
-    /// ✅ Novo método: retorna o número de vetores
-    fn rows(&self) -> usize {
-        self.inner.rows
+    pub fn top_k_subset(&self, py: Python<'_>, query: Vec<f32>, subset: Vec<usize>, k: usize) -> PyResult<Vec<(usize, f32)>> {
+        let results = self.engine.top_k_subset(&query, &subset, k);
+        Ok(results)
     }
 
-    /// ✅ Novo método: retorna o número de dimensões
-    fn dims(&self) -> usize {
-        self.inner.dims
+    pub fn dims(&self) -> usize {
+        self.engine.dims()
+    }
+
+    pub fn rows(&self) -> usize {
+        self.engine.rows()
+    }
+
+    pub fn get_vector(&self, idx: usize) -> PyResult<Vec<f32>> {
+        self.engine.get_vector(idx).ok_or_else(|| PyValueError::new_err("Índice inválido"))
     }
 }
 
-
 #[pyfunction]
-fn PrepareEngine(path: String, normalize: bool, force: bool) -> PyResult<String> {
-    engine::SearchEngine::prepare(&path, normalize, force)
-        .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))
+pub fn prepare_bin_from_numpy(py: Python<'_>, obj: &PyAny, level: &str, base_path: &str) -> PyResult<String> {
+    let array: Vec<Vec<f32>> = if obj.is_instance_of::<PyList>() {
+        obj.extract()?
+    } else {
+        let np = obj.call_method1("astype", ("float32",))?;
+        np.extract()?
+    };
+
+    let path = format!("{}_{}.bin", base_path, level);
+    save_bin(&array, Path::new(&path)).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    Ok(path)
 }
 
 #[pymodule]
 fn nseekfs(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<PySearchEngine>()?;
-    m.add_function(wrap_pyfunction!(PrepareEngine, m)?)?;
+    m.add_function(wrap_pyfunction!(prepare_bin_from_numpy, m)?)?;
     Ok(())
 }
