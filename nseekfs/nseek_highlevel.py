@@ -1,8 +1,9 @@
-import numpy as np
-import time
 import os
+import time
+import numpy as np
 from typing import List, Union
 from sentence_transformers import SentenceTransformer
+
 from nseekfs import prepare_engine_from_embeddings, PySearchEngine
 from nseek_hierarchical_engine import HierarchicalEngine
 
@@ -17,52 +18,59 @@ def search_embeddings(
     disable_ann: bool = False
 ) -> List[dict]:
     """
-    Pesquisa hierárquica com embeddings e frases.
+    Realiza pesquisa hierárquica entre frases, usando embeddings.
+    Gera binários caso ainda não existam.
+
+    Args:
+        embeddings: np.ndarray (shape: [n, d])
+        sentences: Lista de frases (mesmo número que embeddings)
+        query_text: Texto para codificar (usa modelo)
+        query_vector: Vetor já codificado (opcional)
+        levels: Níveis a usar na hierarquia (ex: ["f8", "f16", "f32"])
+        top_k: Número de resultados a devolver
+        base_path: Prefixo dos ficheiros binários
+        disable_ann: Se True, desativa aproximação ANN
+
+    Returns:
+        Lista de dicionários: {idx, score, text}
     """
     start_total = time.time()
 
-    # Gerar vetor de consulta se query_text for usado
     if query_vector is None:
         if query_text is None:
-            raise ValueError("You must provide either query_text or query_vector")
+            raise ValueError("Provide either 'query_text' or 'query_vector'")
         model = SentenceTransformer("all-MiniLM-L6-v2")
         query_vector = model.encode([query_text], normalize_embeddings=True)[0]
 
     query_vector = np.asarray(query_vector, dtype=np.float32)
 
     if query_vector.shape[-1] != embeddings.shape[-1]:
-        raise ValueError("Dimensionality mismatch between query vector and embeddings")
+        raise ValueError(f"Dimensionality mismatch: query={query_vector.shape[-1]}, embeddings={embeddings.shape[-1]}")
 
-    # Garantir binário para cada nível
     paths = {}
     for level in levels:
-        expected_path = f"{base_path}_{level}.bin"
-        if not os.path.exists(expected_path):
-            print(f"🛠️ A criar {expected_path}...")
+        filename = f"{base_path}_{level}.bin"
+        if not os.path.exists(filename):
+            print(f"🛠️ A criar {filename}...")
             try:
-                actual_path = prepare_engine_from_embeddings(
+                path_created = prepare_engine_from_embeddings(
                     embeddings,
                     base_path,
                     level,
-                    True,
-                    not disable_ann
+                    normalize=True,
+                    use_ann=not disable_ann
                 )
-                paths[level] = actual_path  # <- garante o caminho real
+                paths[level] = path_created
             except Exception as e:
-                raise RuntimeError(f"Falha ao criar binário para {level}: {e}")
+                raise RuntimeError(f"Erro ao criar binário '{filename}': {e}")
         else:
-            paths[level] = expected_path
+            paths[level] = filename
 
-
-
-    # Criar engine hierárquica
-    #paths = {lvl: f"{base_path}_{lvl}.bin" for lvl in levels}
     try:
         engine = HierarchicalEngine(paths, disable_ann=disable_ann)
     except Exception as e:
         raise RuntimeError(f"Erro ao inicializar HierarchicalEngine: {e}")
 
-    # Pesquisa
     start = time.time()
     try:
         results = engine.search(query_vector, path=levels, top_k=top_k)
@@ -70,23 +78,14 @@ def search_embeddings(
         raise RuntimeError(f"Erro na pesquisa: {e}")
     elapsed = time.time() - start
 
-    if not isinstance(results, list):
-        raise RuntimeError("Engine search returned unexpected result type.")
-
     formatted = []
-    for r in results:
-        if not isinstance(r, (list, tuple)) or len(r) != 2:
-            continue
-        idx, score = r
-        if not isinstance(idx, int) or not isinstance(score, (float, np.floating)):
-            continue
-        if idx < 0 or idx >= len(sentences):
-            continue
-        formatted.append({
-            "idx": idx,
-            "score": float(score),
-            "text": sentences[idx]
-        })
+    for idx, score in results:
+        if isinstance(idx, int) and 0 <= idx < len(sentences):
+            formatted.append({
+                "idx": idx,
+                "score": float(score),
+                "text": sentences[idx]
+            })
 
     print(f"✅ Pesquisa em {levels} concluída em {elapsed:.4f}s (total {time.time() - start_total:.2f}s)")
     return formatted

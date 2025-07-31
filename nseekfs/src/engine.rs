@@ -93,7 +93,7 @@ impl Engine {
             })
             .collect();
 
-        let flat: Vec<f32> = nested.into_iter().flatten().collect();
+        let flat: Vec<f32> = nested.into_par_iter().flatten().collect();
         let arc_vectors: Arc<[f32]> = Arc::from(flat);
         let rows = arc_vectors.len() / dims;
 
@@ -112,7 +112,6 @@ impl Engine {
         })
     }
 
-    /// Novo método: cria diretamente de Vec<Vec<f32>> (ex: HuggingFace ou OpenAI)
     pub fn from_embeddings(vectors: Vec<Vec<f32>>, normalize: bool, use_ann: bool) -> std::io::Result<Self> {
         if vectors.is_empty() {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Lista de embeddings vazia"));
@@ -123,16 +122,19 @@ impl Engine {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Vetores com dimensões inconsistentes"));
         }
 
-        let mut flat: Vec<f32> = Vec::with_capacity(vectors.len() * dims);
-        for mut vec in vectors {
-            if normalize {
-                normalize_vector_inplace(&mut vec);
-            }
-            flat.extend(vec);
-        }
+        let rows = vectors.len();
+        let mut flat = vec![0.0f32; dims * rows];
+
+        flat.par_chunks_mut(dims)
+            .zip(vectors.into_par_iter())
+            .for_each(|(chunk, mut vec)| {
+                if normalize {
+                    normalize_vector_inplace(&mut vec);
+                }
+                chunk.copy_from_slice(&vec);
+            });
 
         let arc_vectors: Arc<[f32]> = Arc::from(flat);
-        let rows = arc_vectors.len() / dims;
 
         let ann_index = if use_ann {
             Some(AnnIndex::build(&arc_vectors, dims, rows, 16, 42))
@@ -209,6 +211,29 @@ impl Engine {
     pub fn top_k_index(&self, idx: usize, k: usize) -> Option<Vec<(usize, f32)>> {
         let query = self.get_vector(idx)?;
         Some(self.top_k_query(query, k, false))
+    }
+
+    pub fn top_k_subset(&self, query: &[f32], subset: &[usize], k: usize, normalize: bool) -> Vec<(usize, f32)> {
+        assert_eq!(query.len(), self.dims);
+
+        let mut query = query.to_vec();
+        if normalize {
+            normalize_vector_inplace(&mut query);
+        }
+
+        let mut results: Vec<(usize, f32)> = subset
+            .par_iter()
+            .filter_map(|&i| {
+                self.get_vector(i).map(|vec_i| {
+                    let score = cosine_similarity(&query, vec_i);
+                    (i, score)
+                })
+            })
+            .collect();
+
+        results.par_sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
+        results.truncate(k);
+        results
     }
 
     pub fn dims(&self) -> usize {

@@ -4,6 +4,7 @@ use rand::rngs::StdRng;
 use rand_distr::{Normal, Distribution};
 use rayon::prelude::*;
 
+/// Estrutura de índice ANN baseada em hashing LSH (projeções aleatórias)
 #[derive(Clone)]
 pub struct AnnIndex {
     pub bits: usize,
@@ -17,14 +18,12 @@ impl AnnIndex {
         let mut rng = StdRng::seed_from_u64(seed);
         let normal = Normal::new(0.0, 1.0).unwrap();
 
-        // Gerar projeções gaussianas
         let projections: Vec<Vec<f32>> = (0..bits)
             .map(|_| {
                 (0..dims).map(|_| normal.sample(&mut rng) as f32).collect()
             })
             .collect();
 
-        // Construir buckets com base nos hashes
         let buckets: HashMap<u64, Vec<usize>> = (0..rows)
             .into_par_iter()
             .map(|i| {
@@ -32,15 +31,15 @@ impl AnnIndex {
                 let hash = Self::hash_vector(vec_i, &projections);
                 (hash, i)
             })
-            .fold(HashMap::new, |mut acc, (hash, idx)| {
-                acc.entry(hash).or_insert_with(Vec::new).push(idx);
-                acc
+            .fold(HashMap::new, |mut local_map, (hash, idx)| {
+                local_map.entry(hash).or_insert_with(Vec::new).push(idx);
+                local_map
             })
-            .reduce(HashMap::new, |mut a, b| {
-                for (k, mut v) in b {
-                    a.entry(k).or_insert_with(Vec::new).append(&mut v);
+            .reduce(HashMap::new, |mut acc, partial| {
+                for (hash, mut indices) in partial {
+                    acc.entry(hash).or_insert_with(Vec::new).append(&mut indices);
                 }
-                a
+                acc
             });
 
         Self {
