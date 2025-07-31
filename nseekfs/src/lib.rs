@@ -1,85 +1,115 @@
 use pyo3::prelude::*;
-use pyo3::types::PyList;
-use pyo3::exceptions::PyValueError;
-
-use std::fs::File;
-use std::path::Path;
+use pyo3::{wrap_pyfunction, exceptions::PyValueError};
 
 mod engine;
 mod io;
+mod utils;
+mod ann;
 
-use engine::SearchEngine;
-use io::{load_csv_bin, save_bin};
+use engine::Engine;
+
+#[pyfunction]
+fn prepare_engine(path: &str, normalize: bool, force: bool, use_ann: bool) -> PyResult<String> {
+    match io::write_bin_file(path, normalize, force, use_ann) {
+        Ok(p) => Ok(p),
+        Err(e) => Err(PyValueError::new_err(e)),
+    }
+}
+
+#[pyfunction]
+fn prepare_engine_from_embeddings(
+    py_embeddings: &PyAny,
+    base_path: &str,
+    precision: &str,
+    normalize: bool,
+    use_ann: bool,
+) -> PyResult<String> {
+    let mut embeddings: Vec<Vec<f32>> = py_embeddings
+        .extract::<Vec<Vec<f32>>>()
+        .map_err(|e| PyValueError::new_err(format!("Erro ao extrair embeddings: {}", e)))?;
+
+    match io::write_bin_from_embeddings(&mut embeddings, base_path, precision, normalize, use_ann) {
+        Ok(p) => Ok(p),
+        Err(e) => Err(PyValueError::new_err(e)),
+    }
+}
+
+#[pyfunction]
+fn prepare_engine_py(path: &str, normalize: bool, force: bool, use_ann: bool) -> PyResult<String> {
+    prepare_engine(path, normalize, force, use_ann)
+        .map_err(|e| PyValueError::new_err(format!("Erro ao preparar engine: {}", e)))
+}
 
 #[pyclass]
-pub struct PySearchEngine {
-    engine: SearchEngine,
+struct PySearchEngine {
+    engine: Engine,
 }
 
 #[pymethods]
 impl PySearchEngine {
     #[new]
-    pub fn new(path: &str) -> PyResult<Self> {
-        let engine = load_csv_bin(path).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    fn new(path: &str, normalize: Option<bool>, use_ann: Option<bool>) -> PyResult<Self> {
+        let normalize = normalize.unwrap_or(false);
+        let use_ann = use_ann.unwrap_or(true);
+
+        let engine = if path.ends_with(".bin") {
+            Engine::from_bin(path, use_ann)
+        } else {
+            Engine::from_csv_parallel(path, normalize, use_ann)
+        }.map_err(|e| PyValueError::new_err(format!("Erro ao carregar engine: {}", e)))?;
+
         Ok(Self { engine })
     }
 
     #[staticmethod]
-    pub fn from_vectors(py: Python<'_>, obj: &PyAny) -> PyResult<Self> {
-        let list: Vec<Vec<f32>> = if obj.is_instance_of::<PyList>() {
-            obj.extract()?
-        } else {
-            let np = obj.call_method1("astype", ("float32",))?;
-            np.extract()?
-        };
+    fn from_embeddings(py_embeddings: &PyAny, normalize: Option<bool>, use_ann: Option<bool>) -> PyResult<Self> {
+        let normalize = normalize.unwrap_or(true);
+        let use_ann = use_ann.unwrap_or(true);
 
-        let mut engine = SearchEngine::new();
-        for v in list {
-            engine.add(v);
-        }
+        let embeddings: Vec<Vec<f32>> = py_embeddings
+            .extract::<Vec<Vec<f32>>>()
+            .map_err(|e| PyValueError::new_err(format!("Erro ao converter embeddings: {}", e)))?;
+
+        let engine = Engine::from_embeddings(embeddings, normalize, use_ann)
+            .map_err(|e| PyValueError::new_err(format!("Erro ao construir engine: {}", e)))?;
+
         Ok(Self { engine })
     }
 
-    pub fn top_k_query(&self, py: Python<'_>, query: Vec<f32>, k: usize) -> PyResult<Vec<(usize, f32)>> {
-        let results = self.engine.top_k(&query, k);
-        Ok(results)
-    }
-
-    pub fn top_k_subset(&self, py: Python<'_>, query: Vec<f32>, subset: Vec<usize>, k: usize) -> PyResult<Vec<(usize, f32)>> {
-        let results = self.engine.top_k_subset(&query, &subset, k);
-        Ok(results)
-    }
-
-    pub fn dims(&self) -> usize {
+    fn dims(&self) -> usize {
         self.engine.dims()
     }
 
-    pub fn rows(&self) -> usize {
+    fn rows(&self) -> usize {
         self.engine.rows()
     }
 
-    pub fn get_vector(&self, idx: usize) -> PyResult<Vec<f32>> {
-        self.engine.get_vector(idx).ok_or_else(|| PyValueError::new_err("Índice inválido"))
+    fn get_vector(&self, idx: usize) -> PyResult<Vec<f32>> {
+        self.engine.get_vector(idx)
+            .map(|v| v.to_vec())
+            .ok_or_else(|| PyValueError::new_err("Índice fora dos limites"))
+    }
+
+    fn top_k_query(&self, query: Vec<f32>, k: usize, normalize: Option<bool>) -> PyResult<Vec<(usize, f32)>> {
+        if query.len() != self.engine.dims() {
+            return Err(PyValueError::new_err("Dimensão do vetor de consulta não corresponde ao engine"));
+        }
+
+        let normalize = normalize.unwrap_or(true);
+        Ok(self.engine.top_k_query(&query, k, normalize))
+    }
+
+    fn top_k_similar(&self, idx: usize, k: usize) -> PyResult<Vec<(usize, f32)>> {
+        self.engine.top_k_index(idx, k)
+            .ok_or_else(|| PyValueError::new_err("Índice inválido"))
     }
 }
 
-#[pyfunction]
-pub fn prepare_bin_from_numpy(py: Python<'_>, obj: &PyAny, level: &str, base_path: &str) -> PyResult<String> {
-    let array: Vec<Vec<f32>> = if obj.is_instance_of::<PyList>() {
-        obj.extract()?
-    } else {
-        let np = obj.call_method1("astype", ("float32",))?;
-        np.extract()?
-    };
-
-    let path = format!("{}_{}.bin", base_path, level);
-    save_bin(&array, Path::new(&path)).map_err(|e| PyValueError::new_err(e.to_string()))?;
-    Ok(path)
-}
-
 #[pymodule]
-fn nseekfs(_py: Python, m: &PyModule) -> PyResult<()> {
+fn nseekfs(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_class::<PySearchEngine>()?;
-    m.add_function(wrap_pyfunction!(prepare_bin_from_numpy, m)?)?;
+    m.add_function(wrap_pyfunction!(prepare_engine, m)?)?;
+    m.add_function(wrap_pyfunction!(prepare_engine_from_embeddings, m)?)?;
+    m.add_function(wrap_pyfunction!(prepare_engine_py, m)?)?;
     Ok(())
 }

@@ -1,39 +1,63 @@
+import numpy as np
 import time
-from nseekfs import PrepareEngine, PySearchEngine
+import os
+from nseekfs import PySearchEngine, prepare_engine_py
 
-dataset_csv = "data2.csv"
+# Parâmetros
+num_vectors = 100_000
+dims = 384
+csv_path = "testdata.csv"
+npy_path = "testdata.npy"
+bin_path = "testdata.bin"
 
-print("=== 1) PREPARAR DATASET (CSV -> BIN) ===")
-start = time.time()
-bin_path = PrepareEngine(dataset_csv, normalize=True, force=False)
-print(f"✅ Binário pronto: {bin_path} ({time.time()-start:.2f}s)\n")
+# Geração fictícia de embeddings
+def gerar_dados():
+    if not os.path.exists(csv_path) or not os.path.exists(npy_path):
+        data = np.random.randn(num_vectors, dims).astype(np.float32)
+        np.savetxt(csv_path, data, delimiter=",")
+        np.save(npy_path, data)
+        print(f"✅ Gerados {num_vectors} vetores em {dims} dimensões e salvos como .npy e .csv")
+    else:
+        print(f"✅ Ficheiros .csv e .npy já existem")
 
-print("=== 2) CARREGAR ENGINE (.bin preferido) ===")
-start = time.time()
-engine = PySearchEngine(dataset_csv)  # pode ser .csv ou .bin
-print(f"✅ Carregado {engine.rows()} vetores em {time.time()-start:.2f}s")
-print(f"→ Dimensões: {engine.dims()}\n")
+# Testa com CSV (via prepare_engine)
+def benchmark_csv(use_ann: bool):
+    modo = "Aproximado (ANN)" if use_ann else "Exato"
+    print(f"\n🔍 Teste de pesquisa com modo: {modo}")
+    
+    t0 = time.time()
+    path = prepare_engine_py(csv_path, normalize=False, force=True, use_ann=use_ann)
+    print(f"✅ Engine preparado em: {path} [{time.time() - t0:.2f}s]")
+    
+    engine = PySearchEngine(path, normalize=False, use_ann=use_ann)
+    results = engine.top_k_similar(42, 5)
+    
+    print(f"🔎 Resultados para índice 42 (top 5):")
+    for rank, (idx, score) in enumerate(results, 1):
+        print(f"  {rank}. idx={idx} | score={score:.4f}")
+    
+    print(f"⏱️ Tempo de busca: {time.time() - t0:.4f}s")
 
-print("=== 3) PESQUISA POR ÍNDICE ===")
-input_index = 0
-k = 10
-start = time.time()
-results_idx = engine.top_k_similar(input_index, k)
-print(f"✅ top-{k} (index {input_index}) encontrados em {time.time()-start:.4f}s")
-for i, (idx, score) in enumerate(results_idx, start=1):
-    star = "⭐" if idx == input_index else " "
-    print(f"{star} #{i}: índice {idx}, score = {score:.6f}")
-print()
+# Testa com embeddings diretamente (como HuggingFace)
+def benchmark_embeddings():
+    print(f"\n🔍 Teste direto com vetor numpy (simulando HuggingFace/OpenAI)")
+    
+    data = np.load(npy_path)
+    t0 = time.time()
+    engine = PySearchEngine.from_embeddings(data, normalize=True, use_ann=True)
+    print(f"✅ Engine direto carregado em {time.time() - t0:.2f}s")
+    
+    results = engine.top_k_similar(42, 5)
+    
+    print(f"🔎 Resultados para índice 42 (top 5):")
+    for rank, (idx, score) in enumerate(results, 1):
+        print(f"  {rank}. idx={idx} | score={score:.4f}")
+    
+    print(f"⏱️ Tempo de busca: {time.time() - t0:.4f}s")
 
-print("=== 4) PESQUISA POR VETOR EXTERNO ===")
-query_vector = [0.1] * engine.dims()  # vetor fictício
-start = time.time()
-try:
-    results_vec = engine.top_k_query(query_vector, k, normalize=True)
-    print(f"✅ top-{k} (vetor externo) encontrados em {time.time()-start:.4f}s")
-    for i, (idx, score) in enumerate(results_vec, start=1):
-        print(f" #{i}: índice {idx}, score = {score:.6f}")
-except Exception as e:
-    print("❌ Erro:", e)
 
-print("\n=== TESTE COMPLETO ===")
+if __name__ == "__main__":
+    gerar_dados()
+    benchmark_csv(use_ann=False)
+    benchmark_csv(use_ann=True)
+    benchmark_embeddings()
