@@ -1,0 +1,63 @@
+[build-system]
+requires = ["maturin>=1.2,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "nseek"
+version = "0.1.0"
+description = "Fast top-k vector similarity search"
+authors = [{ name = "Diogo Novo" }]
+readme = "README.md"
+requires-python = ">=3.8"
+license = { file = "LICENSE" }
+keywords = [
+    "vector search",
+    "semantic search",
+    "cosine similarity",
+    "approximate nearest neighbors",
+    "csv",
+    "npy",
+    "top-k",
+    "high-performance",
+    "rust",
+    "pyo3"
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Rust",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Intended Audience :: Science/Research",
+    "Development Status :: 4 - Beta"
+]
+
+[tool.maturin]
+bindings = "pyo3"
+module-name = "nseek"
+python-source = "."
+strip = true
+packages = ["nseek"]  
+exclude = [
+    "src/**",
+    "Cargo.lock",
+    "*.rs",
+    "*.toml",
+    "*.csv",
+    "*.npy",
+    "*.bin",
+    "*.log",
+    "nseek/tests/**",
+    ".env",
+]
+include = [
+    "nseek/__init__.py",
+    "nseek/highlevel.py",
+    "nseek/hierarchical.py",
+    "nseek/engine_core.py"
+]

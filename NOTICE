@@ -1,0 +1,6 @@
+This package includes a compiled Rust engine for fast vector similarity search.
+
+The core engine source code is not included in this distribution and remains proprietary.
+Only the Python bindings and API interface are exposed for use.
+
+© 2025 Diogo Novo. All rights reserved.
