@@ -19,7 +19,6 @@ keywords = [
     "top-k",
     "high-performance"
 ]
-
 categories = [
     "science",
     "algorithms",
@@ -29,9 +28,8 @@ categories = [
     "command-line-utilities"
 ]
 
-
 [lib]
-name = "nseek"
+name = "nseekfs"
 crate-type = ["cdylib"]
 path = "src/lib.rs"
 
@@ -49,13 +47,3 @@ rand_distr = "0.4"
 log = "0.4"
 env_logger = "0.11"
 chrono = "0.4"
-
-[tool.maturin]
-bindings = "pyo3"
-python-source = "nseek"        
-packages = ["nseek"]           
-include = ["nseek/**/*.py"]    
-strip = true
-exclude = ["src/**", "tests/**", "target/**", "examples/**", "Cargo.lock"]
-
-

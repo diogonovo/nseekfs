@@ -217,7 +217,7 @@ impl PySearchEngine {
 }
 
 #[pymodule]
-fn nseek(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
+fn nseekfs(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     crate::utils::logger::init_logging();
 
     m.add_class::<PySearchEngine>()?;

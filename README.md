@@ -1,146 +1,117 @@
-# 🔎 nseekfs – Fast Hierarchical Vector Search Engine with ANN
+# 🔎 nseekfs – High-Performance Vector Search Engine
 
-`nseekfs` is a high-performance vector search engine with optional Approximate Nearest Neighbor (ANN) indexing. Designed for semantic retrieval, hybrid AI pipelines, and large-scale search, it combines Rust speed with a clean Python interface.
+**nseekfs** is a fast, lightweight vector search engine built for semantic retrieval, ranking pipelines, and large-scale AI workloads. It offers a clean and intuitive Python interface backed by a highly optimized native core written in Rust.
 
-> ⚠️ This public release includes selected components only. Internal modules for advanced reasoning, graph traversal, or compression are withheld.
+> ⚠️ This public release focuses on the vector similarity engine. Advanced modules (hierarchical search, reasoning, graph inference) are under active development and will be released progressively.
 
 ---
 
 ## 🚀 Features
 
-- ✅ Hierarchical search across quantization levels (`f8`, `f16`, `f32`, `f64`)
-- ✅ Optional Approximate Nearest Neighbor (LSH)
-- ✅ PyO3 bindings – native Python interface
-- ✅ Memory-mapped `.bin` index format
-- ✅ Parallelism with Rayon + fast float parsing
-- 🧩 Designed for plug-in use in larger AI systems
+- ✅ One-line search engine initialization from embeddings
+- ✅ Optional Approximate Nearest Neighbor (ANN) indexing
+- ✅ Supports quantization levels: `"f8"`, `"f16"`, `"f32"`, `"f64"`
+- ✅ Efficient `.bin` index generation and reuse
+- ✅ Built with Rust + PyO3 for performance
+- 🧩 Ready for integration into custom AI pipelines
 
 ---
 
 ## 📦 Installation
 
-> ℹ️ Once published, install via:
-
 ```bash
 pip install nseekfs
 ```
 
-For local builds:
-
-```bash
-pip install maturin
-maturin develop
-```
-
 ---
 
-## 🔍 Quick Start
+## 🧠 Basic Usage
 
 ```python
-from nseek_highlevel import search_embeddings
+from nseekfs import NSeek
 
-# Search using vector (example with manual vector)
-query_vector = [0.12, -0.07, 0.33, ...]  # vector of the same dimension as the embeddings
-
-results = search_embeddings(
-    embeddings=my_embeddings,           # np.ndarray or list of vectors
-    sentences=my_sentences,             # list of corresponding texts
-    query_vector=query_vector,          # vector to query 
-    levels=["f16", "f32"],              # levels to search through
-    top_k=5
+engine = NSeek.from_embeddings(
+    embeddings=my_vectors,     # np.ndarray, List[List[float]], or path to .npy / .csv
+    level="f16",               # "f8", "f16", "f32", or "f64"
+    use_ann=True,              # enables ANN indexing
+    base_dir="nseek_indexes",  # where to store .bin files
+    base_name="my_index"
 )
 
+results = engine.query(query_vector, top_k=5)
+
 for r in results:
-    print(f"{r['score']:.4f} → {r['text']}")
+    print(f"{r['score']:.4f} → idx {r['idx']}")
 ```
 
 ---
 
-## 🧠 Use Binary Index Files (Hierarchical)
+## 📥 Embeddings Input Options
 
-```python
-from nseek_hierarchical_engine import HierarchicalEngine
+You can provide your embeddings as:
 
-engine = HierarchicalEngine({
-    "f16": "vectors_f16.bin",
-    "f32": "vectors_f32.bin"
-})
-
-results = engine.search(query_vector, top_k=5)
-```
+- ✅ `np.ndarray` (2D)
+- ✅ `List[List[float]]`
+- ✅ `.npy` or `.csv` file paths
 
 ---
 
-## 🐍 Python API (PyO3)
+## 📤 Query Vector
 
-```python
-from nseekfs import PySearchEngine, prepare_engine_from_embeddings
-
-engine = PySearchEngine.from_embeddings(embeddings, normalize=True, use_ann=True)
-results = engine.top_k_query(query_vector.tolist(), k=5)
-
-# or load from binary
-engine = PySearchEngine("vectors_f16.bin", normalize=False, use_ann=True)
-```
+- Must be a 1D `List[float]` or `np.ndarray`
+- Will be automatically normalized
+- Must match the same dimension as your embeddings
 
 ---
 
-## ⚡ ANN (LSH with Random Hyperplanes)
+## ⚡ ANN (Approximate Nearest Neighbors)
 
-- Enabled by default via `use_ann=True`
-- Internally uses random hyperplanes to hash vectors
-- Supports `bits`, `seed` customization via `from_embeddings_custom`
-
----
-
-## 💾 Binary Index Creation
-
-In Rust:
-
-```rust
-use nseekfs::io::write_bin_file;
-
-let bin_path = write_bin_file("my_vectors.csv", true, false, true)?;
-```
-
-Or in Python:
-
-```python
-prepare_engine_from_embeddings(embeddings, "my_vectors", "f16", normalize=True, use_ann=True)
-```
+- Enabled via `use_ann=True` during engine creation
+- Uses random hyperplane hashing for fast lookup
+- Fully integrated into the `.bin` index
 
 ---
 
-## 🧪 Benchmarks
+## 🧪 Example Index Structure
 
-| Dataset Size | Search Path            | Avg Time |
-|--------------|------------------------|----------|
-| 10,000       | `["f32"]`              | ~0.04s   |
-| 100,000      | `["f16", "f32"]`       | ~0.12s   |
-| 500,000      | `["f8", "f16", "f32"]` | ~0.21s   |
+```
+nseek_indexes/
+└── my_index/
+    └── f16.bin
+```
+
+Each file stores the quantized and indexed representation of your vectors.
 
 ---
 
-## 📂 Project Structure
+## ⚙️ Parameters
 
-```
-nseekfs/
-├── engine.rs                 # Core vector search engine
-├── ann.rs                    # ANN via LSH
-├── io.rs                     # Binary I/O helpers
-├── utils.rs                  # Cosine, CSV, normalize
-├── lib.rs                    # Python bindings (PyO3)
-├── nseek_highlevel.py        # One-line entrypoint
-├── nseek_hierarchical_engine.py # Level chaining
-```
+| Parameter     | Description                                  |
+|---------------|----------------------------------------------|
+| `embeddings`  | Embeddings as array, list or file            |
+| `level`       | Quantization: `"f8"`, `"f16"`, `"f32"`, `"f64"` |
+| `use_ann`     | Enable/disable ANN indexing                  |
+| `base_dir`    | Directory where `.bin` files are stored      |
+| `base_name`   | Subdirectory/index name                      |
+
+---
+
+## 📌 Roadmap (Under Development)
+
+- 🌐 Hierarchical search across multiple levels
+- 🧠 Graph-based semantic traversal and reasoning
+- 🔄 Index updates and append-only formats
+- 🧩 Integration with Hugging Face models
+
+> Future versions will expose higher-level reasoning, chaining and graph traversal engines.
 
 ---
 
 ## 🔒 Privacy & Packaging
 
-This package exposes only the compiled Rust library via PyO3. Source code is excluded from the distributed wheel.
-
-> You can use `nseekfs` via `pip` but cannot view or modify the internal Rust logic.
+- Only the Python interface is exposed
+- Core engine is compiled and optimized in Rust (not exposed in wheel)
+- No external API dependencies or network access required
 
 ---
 
@@ -148,10 +119,11 @@ This package exposes only the compiled Rust library via PyO3. Source code is exc
 
 MIT License – see [LICENSE](LICENSE)
 
-This is a partial release. For advanced modules or enterprise licensing, please contact the author.
-
 ---
 
-## 🙋‍♂️ Contact
+## 🙋 Contact
 
-For questions, support or commercial use, contact [Diogo Novo](mailto:diogonovo@outlook.pt)
+For professional use, enterprise integration, or questions:
+
+📧 [diogonovo@outlook.pt](mailto:diogonovo@outlook.pt)  
+🔗 [github.com/diogonovo/nseekfs](https://github.com/diogonovo/nseekfs)

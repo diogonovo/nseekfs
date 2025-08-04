@@ -4,7 +4,7 @@ import random
 import numpy as np
 from itertools import product
 from sentence_transformers import SentenceTransformer
-from nseek import prepare_engine_from_embeddings, PySearchEngine
+from nseekfs import prepare_engine_from_embeddings, PySearchEngine
 
 # ========================
 # Parâmetros

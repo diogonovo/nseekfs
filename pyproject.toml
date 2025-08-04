@@ -3,7 +3,7 @@ requires = ["maturin>=1.2,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "nseek"
+name = "nseekfs"
 version = "0.1.0"
 description = "Fast top-k vector similarity search"
 authors = [{ name = "Diogo Novo" }]
@@ -36,13 +36,16 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "Development Status :: 4 - Beta"
 ]
+dependencies = [
+    "numpy>=1.21"
+]
 
 [tool.maturin]
 bindings = "pyo3"
-module-name = "nseek"
+module-name = "nseekfs"
 python-source = "."
+packages = ["nseekfs"]
 strip = true
-packages = ["nseek"]  
 exclude = [
     "src/**",
     "Cargo.lock",
@@ -52,12 +55,7 @@ exclude = [
     "*.npy",
     "*.bin",
     "*.log",
-    "nseek/tests/**",
+    "nseekfs/tests/**",
     ".env",
 ]
-include = [
-    "nseek/__init__.py",
-    "nseek/highlevel.py",
-    "nseek/hierarchical.py",
-    "nseek/engine_core.py"
-]
+include = ["nseekfs/**/*.py"]

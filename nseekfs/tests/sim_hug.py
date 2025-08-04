@@ -2,7 +2,7 @@ import numpy as np
 import time
 import os
 from sentence_transformers import SentenceTransformer
-from nseek import prepare_engine_from_embeddings, PySearchEngine
+from nseekfs import prepare_engine_from_embeddings, PySearchEngine
 
 # ========================
 # Simular engenheiro

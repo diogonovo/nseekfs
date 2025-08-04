@@ -1,6 +1,6 @@
 import numpy as np
 import logging
-from .engine_core import PySearchEngine
+from ...nseekfs.engine_core import PySearchEngine
 
 logger = logging.getLogger(__name__)
 

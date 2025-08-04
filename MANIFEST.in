@@ -1,4 +1,8 @@
+include README.md
+include LICENSE
+recursive-include nseek *.py
+prune nseek/internal
+
 include nseek/__init__.py
 include nseek/highlevel.py
-include nseek/hierarchical.py
 include nseek/engine_core.py
