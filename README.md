@@ -39,10 +39,13 @@ maturin develop
 ```python
 from nseek_highlevel import search_embeddings
 
+# Search using vector (example with manual vector)
+query_vector = [0.12, -0.07, 0.33, ...]  # vector of the same dimension as the embeddings
+
 results = search_embeddings(
     embeddings=my_embeddings,           # np.ndarray or list of vectors
     sentences=my_sentences,             # list of corresponding texts
-    query_text="example query",         # or use query_vector
+    query_vector=query_vector,          # vector to query 
     levels=["f16", "f32"],              # levels to search through
     top_k=5
 )

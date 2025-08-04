@@ -3,9 +3,6 @@ import time
 import numpy as np
 import logging
 from typing import List, Union
-#from sentence_transformers import SentenceTransformer
-#from nseek import prepare_engine_from_embeddings, PySearchEngine
-#from nseek_hierarchical_engine import HierarchicalEngine
 from .engine_core import prepare_engine_from_embeddings, PySearchEngine
 
 logger = logging.getLogger(__name__)
@@ -13,7 +10,6 @@ logger = logging.getLogger(__name__)
 def search_embeddings(
     embeddings: np.ndarray,
     sentences: List[str],
-    query_text: Union[str, None] = None,
     query_vector: Union[np.ndarray, List[float], None] = None,
     levels: List[str] = ["f16", "f32"],
     top_k: int = 5,
@@ -26,8 +22,7 @@ def search_embeddings(
     Args:
         embeddings: np.ndarray with shape (n, d)
         sentences: List of texts (length n)
-        query_text: Optional query string (encoded if no query_vector)
-        query_vector: Optional precomputed query vector
+        query_vector: Precomputed query vector
         levels: Precision levels to search through
         top_k: Number of top results to return
         base_path: Prefix for binary files
@@ -44,11 +39,6 @@ def search_embeddings(
 
     if query_vector is None:
         raise ValueError("Provide 'query_vector'")
-        #if query_text is None:
-        #    raise ValueError("Provide either 'query_text' or 'query_vector'")
-        #logger.info("Encoding query text using sentence-transformers")
-        #model = SentenceTransformer("all-MiniLM-L6-v2")
-        #query_vector = model.encode([query_text], normalize_embeddings=True)[0]
 
     query_vector = np.asarray(query_vector, dtype=np.float32)
 
