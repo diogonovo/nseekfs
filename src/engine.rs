@@ -8,9 +8,13 @@ use fast_float::parse as fast_parse;
 use memmap2::{Mmap, MmapMut};
 use rayon::prelude::*;
 
-use crate::ann::AnnIndex;
+use crate::ann_opt::AnnIndex;
 use crate::utils::vector::{cosine_similarity, normalize_vector_inplace, validate_dimensions};
 use log::{debug, error, info, warn};
+
+mod query;
+pub use crate::query::EngineTopKExt;
+
 
 #[derive(Clone)]
 pub struct Engine {
@@ -62,7 +66,7 @@ impl Engine {
         let vectors = Arc::from(data);
 
         let ann_index = if use_ann {
-            Some(AnnIndex::build(&vectors, dims, rows, None, None))
+            Some(AnnIndex::build(&vectors, dims, rows, 32, 42))
         } else {
             None
         };
@@ -138,7 +142,7 @@ impl Engine {
         );
 
         let ann_index = if use_ann {
-            Some(AnnIndex::build(&arc_vectors, dims, rows, None, None))
+            Some(AnnIndex::build(&arc_vectors, dims, rows, 32, 42))
         } else {
             None
         };
@@ -188,7 +192,7 @@ impl Engine {
         let arc_vectors: Arc<[f32]> = Arc::from(flat);
 
         let ann_index = if use_ann {
-            Some(AnnIndex::build(&arc_vectors, dims, rows, None, None))
+            Some(AnnIndex::build(&arc_vectors, dims, rows, 32, 42))
         } else {
             None
         };
@@ -286,12 +290,12 @@ impl Engine {
         Some(&self.vectors[start..end])
     }
 
-    pub fn top_k_query(
+    //pub fn top_k_query(
         &self,
         query: &[f32],
         k: usize,
         normalize: bool,
-    ) -> Result<Vec<(usize, f32)>, String> {
+    //) -> Result<Vec<(usize, f32)>, String> {
         if query.len() != self.dims {
             warn!(
                 "Received query with wrong dimension: expected={}, got={}",
@@ -352,7 +356,7 @@ impl Engine {
         );
 
         Ok(results)
-    }
+    //}
 
     pub fn top_k_index(&self, idx: usize, k: usize) -> Result<Vec<(usize, f32)>, String> {
         debug!("Top-k index search → idx={} k={}", idx, k);

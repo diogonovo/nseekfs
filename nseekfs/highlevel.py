@@ -6,6 +6,9 @@ import logging
 logger = logging.getLogger(__name__)
 
 class NSeek:
+    """
+    High-level interface for initializing and querying vector search indexes using nseekfs.
+    """
     def __init__(self, engine, level: str):
         self.engine = engine
         self.level = level
@@ -20,6 +23,10 @@ class NSeek:
         base_dir: str = "nseek_indexes",
         base_name: str = "default"
     ) -> "NSeek":
+        """
+        Initializes the engine from embeddings (array, list, or file path).
+        Generates a binary index file if it doesn't exist.
+        """
         if similarity != "cosine":
             raise ValueError("Only 'cosine' similarity is supported in this version.")
 
@@ -55,26 +62,29 @@ class NSeek:
         if d > 4096:
             raise ValueError("Embedding dimension too large. Must be <= 4096.")
 
-        norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
-        norms[norms == 0] = 1e-12
-        embeddings = embeddings / norms
+        #norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+        #norms[norms == 0] = 1e-12
+        #embeddings = embeddings / norms
 
-        index_dir = os.path.join(base_dir, base_name)
+        index_dir = os.path.abspath(os.path.join(base_dir, base_name))
         os.makedirs(index_dir, exist_ok=True)
 
-        from .nseekfs import prepare_engine_from_embeddings, PySearchEngine
+        from .nseekfs import py_prepare_bin_from_embeddings, PySearchEngine
 
         bin_path = os.path.join(index_dir, f"{level}.bin")
         if not os.path.exists(bin_path):
             logger.info(f"Creating binary file for level '{level}' at {bin_path}")
             try:
-                path_created = prepare_engine_from_embeddings(
-                    embeddings,
-                    index_dir,
+                path_created = py_prepare_bin_from_embeddings(
+                    embeddings.tolist(),  
+                    d,
+                    bin_path,
                     level,
+                    use_ann,
                     normalize=False,
-                    use_ann=use_ann
-                )
+                    seed=42
+               )
+
                 engine = PySearchEngine(path_created, use_ann=use_ann)
             except Exception as e:
                 raise RuntimeError(f"Failed to create binary for level {level}: {e}")
@@ -86,8 +96,20 @@ class NSeek:
     def query(
         self,
         query_vector: Union[np.ndarray, List[float]],
-        top_k: int = 5
+        top_k: int = 5,
+        method: str = "simd"
     ) -> List[dict]:
+        """
+        Queries the index with a normalized vector and returns the top-k matches.
+
+        Args:
+            query_vector: The input vector to search for.
+            top_k: Number of nearest neighbors to return.
+            method: Search method to use: "simd", "scalar", or "auto". Default is "simd".
+
+        Returns:
+            List of dictionaries with keys 'idx' and 'score'.
+        """
         if not isinstance(query_vector, (list, np.ndarray)):
             raise TypeError("Query vector must be a list or numpy array.")
 
@@ -101,8 +123,18 @@ class NSeek:
 
         query_vector = query_vector / norm
 
-        results = self.engine.top_k_query(query_vector.tolist(), top_k)
+        try:
+            results = self.engine.top_k_query(
+                query_vector.tolist(),
+                top_k,
+                method=method
+            )
+        except Exception as e:
+            logger.error(f"Search failed: {e}")
+            raise RuntimeError(f"Search failed at level {self.level}: {e}")
+
         return [
             {"idx": int(idx), "score": float(score)}
             for idx, score in results
         ]
+

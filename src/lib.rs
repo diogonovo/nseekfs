@@ -5,7 +5,10 @@ mod ann;
 mod engine;
 mod io;
 mod utils;
+mod prebin;
+mod ann_opt;
 
+use prebin::prepare_bin_from_embeddings;
 use engine::Engine;
 use log::{error, info};
 
@@ -64,6 +67,27 @@ fn prepare_engine_py(path: &str, normalize: bool, force: bool, use_ann: bool) ->
         PyValueError::new_err(format!("Error preparing engine: {}", e))
     })
 }
+
+#[pyfunction]
+fn py_prepare_bin_from_embeddings(
+    embeddings: Vec<Vec<f32>>,
+    dims: usize,
+    output_path: &str,
+    level: &str,
+    use_ann: bool,
+    normalize: bool,
+    seed: u64,
+) -> PyResult<String> {
+    let rows = embeddings.len();
+    let flat: Vec<f32> = embeddings.into_iter().flatten().collect();
+
+    prebin::prepare_bin_from_embeddings(
+        &flat, dims, rows, output_path, level, use_ann, normalize, seed
+    ).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
+
+    Ok(output_path.to_string())
+}
+
 
 #[pyclass]
 struct PySearchEngine {
@@ -170,6 +194,7 @@ impl PySearchEngine {
         query: Vec<f32>,
         k: usize,
         normalize: Option<bool>,
+        method: Option<String>,
     ) -> PyResult<Vec<(usize, f32)>> {
         if query.len() != self.engine.dims() {
             error!("Query vector dimension does not match engine");
@@ -179,18 +204,60 @@ impl PySearchEngine {
         }
 
         let normalize = normalize.unwrap_or(true);
-        self.engine.top_k_query(&query, k, normalize).map_err(|e| {
+        let method = method.unwrap_or_else(|| "simd".to_string());
+
+        let result = match method.as_str() {
+            "scalar" => self.engine.top_k_query_scalar(&query, k, normalize),
+            "simd" => self.engine.top_k_query_simd(&query, k, normalize),
+            "auto" => self.engine.top_k_query(&query, k, normalize),
+            other => {
+                error!("Invalid method: {}", other);
+                return Err(PyValueError::new_err(format!(
+                    "Invalid method: '{}'. Use 'simd', 'scalar', or 'auto'.",
+                    other
+                )));
+            }
+        };
+
+        result.map_err(|e| {
             error!("Error: {}", e);
             PyValueError::new_err(e)
         })
     }
 
-    fn top_k_similar(&self, idx: usize, k: usize) -> PyResult<Vec<(usize, f32)>> {
-        self.engine.top_k_index(idx, k).map_err(|e| {
-            error!("Invalid index: {}", e);
+
+    fn top_k_similar(
+        &self,
+        idx: usize,
+        k: usize,
+        method: Option<String>,
+    ) -> PyResult<Vec<(usize, f32)>> {
+        let method = method.unwrap_or_else(|| "simd".to_string());
+
+        let query = self.engine.get_vector(idx).ok_or_else(|| {
+            error!("Index out of bounds: {}", idx);
             PyValueError::new_err("Invalid index")
+        })?;
+
+        let result = match method.as_str() {
+            "scalar" => self.engine.top_k_query_scalar(query, k, false),
+            "simd" => self.engine.top_k_query_simd(query, k, false),
+            "auto" => self.engine.top_k_query(query, k, false),
+            other => {
+                error!("Invalid method: {}", other);
+                return Err(PyValueError::new_err(format!(
+                    "Invalid method: '{}'. Use 'simd', 'scalar', or 'auto'.",
+                    other
+                )));
+            }
+        };
+
+        result.map_err(|e| {
+            error!("Error: {}", e);
+            PyValueError::new_err(e)
         })
     }
+
 
     fn top_k_subset(
         &self,
@@ -198,6 +265,7 @@ impl PySearchEngine {
         subset: Vec<usize>,
         k: usize,
         normalize: Option<bool>,
+        method: Option<String>,
     ) -> PyResult<Vec<(usize, f32)>> {
         if query.len() != self.engine.dims() {
             error!("Query vector dimension does not match engine");
@@ -207,13 +275,28 @@ impl PySearchEngine {
         }
 
         let normalize = normalize.unwrap_or(true);
-        self.engine
-            .top_k_subset(&query, &subset, k, normalize)
-            .map_err(|e| {
-                error!("Error: {}", e);
-                PyValueError::new_err(e)
-            })
+        let method = method.unwrap_or_else(|| "simd".to_string());
+
+        let result = match method.as_str() {
+            "scalar" | "simd" | "auto" => {
+                // todas usam a mesma função base
+                self.engine.top_k_subset(&query, &subset, k, normalize)
+            }
+            other => {
+                error!("Invalid method: {}", other);
+                return Err(PyValueError::new_err(format!(
+                    "Invalid method: '{}'. Use 'simd', 'scalar', or 'auto'.",
+                    other
+                )));
+            }
+        };
+
+        result.map_err(|e| {
+            error!("Error: {}", e);
+            PyValueError::new_err(e)
+        })
     }
+
 }
 
 #[pymodule]
@@ -224,5 +307,6 @@ fn nseekfs(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(prepare_engine, m)?)?;
     m.add_function(wrap_pyfunction!(prepare_engine_from_embeddings, m)?)?;
     m.add_function(wrap_pyfunction!(prepare_engine_py, m)?)?;
+    m.add_function(wrap_pyfunction!(py_prepare_bin_from_embeddings, m)?)?;
     Ok(())
 }
