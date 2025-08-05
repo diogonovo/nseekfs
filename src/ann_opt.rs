@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 use std::fs::{File};
 use std::io::{BufWriter, BufReader, Write, Read};
 use std::path::Path;
+use std::sync::Mutex;
 
 #[derive(Clone)]
 pub struct AnnIndex {
@@ -29,7 +30,9 @@ impl AnnIndex {
             .map(|_| (0..dims).map(|_| normal.sample(&mut rng) as f32).collect())
             .collect();
 
-        let mut buckets: HashMap<u64, Vec<usize>> = HashMap::new();
+        use std::sync::Mutex;
+        let buckets = Mutex::new(HashMap::new());
+
         (0..rows).into_par_iter().for_each(|i| {
             let offset = i * dims;
             let vec_i = &vectors[offset..offset + dims];
@@ -40,7 +43,9 @@ impl AnnIndex {
                     hash |= 1 << j;
                 }
             }
-            buckets.entry(hash).or_insert_with(Vec::new).push(i);
+            let mut guard = buckets.lock().unwrap();
+            guard.entry(hash).or_insert_with(Vec::new).push(i);
+
         });
 
         let checksum = Self::compute_checksum(vectors);
@@ -49,7 +54,7 @@ impl AnnIndex {
             dims,
             bits,
             projections,
-            buckets,
+            buckets: buckets.into_inner().unwrap(),
             checksum,
         }
     }
@@ -128,7 +133,9 @@ impl AnnIndex {
         }
 
         let rows = vectors.len() / dims;
-        let mut buckets: HashMap<u64, Vec<usize>> = HashMap::new();
+        use std::sync::Mutex;
+        let buckets = Mutex::new(HashMap::new());
+
         (0..rows).into_par_iter().for_each(|i| {
             let offset = i * dims;
             let vec_i = &vectors[offset..offset + dims];
@@ -139,14 +146,16 @@ impl AnnIndex {
                     hash |= 1 << j;
                 }
             }
-            buckets.entry(hash).or_insert_with(Vec::new).push(i);
+            let mut guard = buckets.lock().unwrap();
+            guard.entry(hash).or_insert_with(Vec::new).push(i);
+
         });
 
         Ok(Self {
             dims,
             bits,
             projections,
-            buckets,
+            buckets: buckets.into_inner().unwrap(),
             checksum,
         })
     }
@@ -161,5 +170,19 @@ impl AnnIndex {
         };
         hasher.update(bytes);
         hasher.finalize().into()
+    }
+
+    pub fn query_candidates(&self, query: &[f32]) -> Vec<usize> {
+        assert_eq!(query.len(), self.dims);
+
+        let mut hash = 0u64;
+        for (j, proj) in self.projections.iter().enumerate() {
+            let dot = query.iter().zip(proj).map(|(a, b)| a * b).sum::<f32>();
+            if dot >= 0.0 {
+                hash |= 1 << j;
+            }
+        }
+
+        self.buckets.get(&hash).cloned().unwrap_or_else(Vec::new)
     }
 }

@@ -1,7 +1,7 @@
 use rayon::prelude::*;
 use std::fs::{File, rename};
 use std::path::Path;
-use std::simd::{f32x8, SimdFloat};
+use wide::f32x8;
 use memmap2::MmapMut;
 use sha2::{Sha256, Digest};
 use crate::ann_opt::AnnIndex;
@@ -47,8 +47,9 @@ fn normalize_rows_simd(data: &mut [f32], dims: usize) {
     data.par_chunks_mut(dims).for_each(|row| {
         let mut sum = 0.0;
         for chunk in row.chunks_exact(8) {
-            let simd = f32x8::from_slice(chunk);
-            sum += simd.mul(simd).reduce_sum();
+            let simd = f32x8::new(chunk.try_into().unwrap());
+            let squared = simd * simd;
+            sum += squared.reduce_add();
         }
         for val in &row[chunked_len(dims)..] {
             sum += val * val;
@@ -76,7 +77,7 @@ fn quantize_in_place(data: &mut [f32], level: &str) -> Result<(), String> {
 
 fn build_ann_index(data: &[f32], dims: usize, rows: usize, seed: u64, ann_path: &str) -> Result<(), String> {
     let ann = AnnIndex::build(data, dims, rows, 32, seed);
-    ann.save(ann_path).map_err(|e| format!("Failed to save ANN: {}", e))?
+    ann.save(ann_path).map_err(|e| format!("Failed to save ANN: {}", e))?;
     Ok(())
 }
 

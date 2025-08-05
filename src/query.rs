@@ -1,14 +1,10 @@
-// src/query.rs
-
 use rayon::prelude::*;
 use std::cmp::Ordering;
-use std::simd::{Simd, SimdFloat};
 use crate::engine::Engine;
-
-const LANES: usize = 16;
+use wide::f32x8;
+const LANES: usize = 8;
 
 impl Engine {
-    /// Versão escalar simples
     pub fn top_k_query_scalar(
         &self,
         query: &[f32],
@@ -102,16 +98,16 @@ impl Engine {
                 let start = i * dims;
                 let vec_i = &vector_data[start..start + dims];
 
-                let mut simd_sum = Simd::<f32, LANES>::splat(0.0);
+                let mut simd_sum = f32x8::splat(0.0);
                 let chunks = dims / LANES;
 
                 for j in 0..chunks {
-                    let q_chunk = Simd::from_slice(&query_ref[j * LANES..(j + 1) * LANES]);
-                    let v_chunk = Simd::from_slice(&vec_i[j * LANES..(j + 1) * LANES]);
+                    let q_chunk = f32x8::new(query_ref[j * LANES..(j + 1) * LANES].try_into().unwrap());
+                    let v_chunk = f32x8::new(vec_i[j * LANES..(j + 1) * LANES].try_into().unwrap());
                     simd_sum += q_chunk * v_chunk;
                 }
 
-                let mut total = simd_sum.reduce_sum();
+                let mut total = simd_sum.reduce_add();
                 for j in (chunks * LANES)..dims {
                     total += query_ref[j] * vec_i[j];
                 }

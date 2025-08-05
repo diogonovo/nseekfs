@@ -7,6 +7,9 @@ mod io;
 mod utils;
 mod prebin;
 mod ann_opt;
+mod query;
+
+//pub use query::EngineTopKExt;
 
 use prebin::prepare_bin_from_embeddings;
 use engine::Engine;

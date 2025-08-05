@@ -12,8 +12,7 @@ use crate::ann_opt::AnnIndex;
 use crate::utils::vector::{cosine_similarity, normalize_vector_inplace, validate_dimensions};
 use log::{debug, error, info, warn};
 
-mod query;
-pub use crate::query::EngineTopKExt;
+//use crate::query::EngineTopKExt;
 
 
 #[derive(Clone)]
@@ -241,7 +240,13 @@ impl Engine {
         let arc_vectors: Arc<[f32]> = Arc::from(flat);
 
         let ann_index = if use_ann {
-            Some(AnnIndex::build(&arc_vectors, dims, rows, bits, seed))
+            Some(AnnIndex::build(
+                &arc_vectors,
+                dims,
+                rows,
+                bits.expect("bits must be Some"),
+                seed.expect("seed must be Some"),
+            ))
         } else {
             None
         };
@@ -291,71 +296,71 @@ impl Engine {
     }
 
     //pub fn top_k_query(
-        &self,
-        query: &[f32],
-        k: usize,
-        normalize: bool,
+    // &self,
+    // query: &[f32],
+    // k: usize,
+    // normalize: bool,
     //) -> Result<Vec<(usize, f32)>, String> {
-        if query.len() != self.dims {
-            warn!(
-                "Received query with wrong dimension: expected={}, got={}",
-                self.dims,
-                query.len()
-            );
-            return Err(format!(
-                "Query vector has wrong dimension: expected {}, got {}",
-                self.dims,
-                query.len()
-            ));
-        }
+      //if query.len() != self.dims {
+           // warn!(
+           //     "Received query with wrong dimension: expected={}, got={}",
+           //     self.dims,
+           //     query.len()
+           // );
+           // return Err(format!(
+           //     "Query vector has wrong dimension: expected {}, got {}",
+           //     self.dims,
+           //     query.len()
+           // ));
+      //}
 
-        debug!(
-            "Running top-k query → dims={} k={} normalize={} ann={}",
-            self.dims, k, normalize, self.use_ann
-        );
+      //debug!(
+      //    "Running top-k query → dims={} k={} normalize={} ann={}",
+      //    self.dims, k, normalize, self.use_ann
+      //);
 
-        let start_time = Instant::now();
+      //let start_time = Instant::now();
 
-        let mut query = query.to_vec();
-        if normalize {
-            normalize_vector_inplace(&mut query);
-        }
+      //let mut query = query.to_vec();
+      //if normalize {
+      //    normalize_vector_inplace(&mut query);
+      //}
 
-        let candidates: Vec<usize> = if self.use_ann {
-            match &self.ann_index {
-                Some(index) => {
-                    let c = index.query_candidates(&query);
-                    debug!("ANN returned {} candidates", c.len());
-                    c
-                }
-                None => {
-                    warn!("ANN is enabled but index is missing → using full search");
-                    (0..self.rows).collect()
-                }
-            }
-        } else {
-            (0..self.rows).collect()
-        };
+      //let candidates: Vec<usize> = if self.use_ann {
+      //    match &self.ann_index {
+      //        Some(index) => {
+      //            let c = index.query_candidates(&query);
+      //            debug!("ANN returned {} candidates", c.len());
+      //            c
+      //        }
+      //        None => {
+      //            warn!("ANN is enabled but index is missing → using full search");
+      //            (0..self.rows).collect()
+      //        }
+      //    }
+      //} else {
+      //    (0..self.rows).collect()
+      //};
 
-        let mut results: Vec<(usize, f32)> = candidates
-            .into_par_iter()
-            .map(|i| {
-                let vec_i = &self.vectors[i * self.dims..(i + 1) * self.dims];
-                let score = cosine_similarity(&query, vec_i);
-                (i, score)
-            })
-            .collect();
+      //let mut results: Vec<(usize, f32)> = candidates
+      //    .into_par_iter()
+      //    .map(|i| {
+      //        let vec_i = &self.vectors[i * self.dims..(i + 1) * self.dims];
+      //        let score = cosine_similarity(&query, vec_i);
+      //        (i, score)
+      //    })
+      //    .collect();
 
-        results.par_sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
-        results.truncate(k);
-        let elapsed = start_time.elapsed();
-        info!(
-            "Top-k query completed → results={} time={:.2?}",
-            results.len(),
-            elapsed
-        );
+      //results.par_sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
+      //results.truncate(k);
+      //let elapsed = start_time.elapsed();
+      //info!(
+      //    "Top-k query completed → results={} time={:.2?}",
+      //    results.len(),
+      //    elapsed
+      //);
 
-        Ok(results)
+      //Ok(results)
     //}
 
     pub fn top_k_index(&self, idx: usize, k: usize) -> Result<Vec<(usize, f32)>, String> {
