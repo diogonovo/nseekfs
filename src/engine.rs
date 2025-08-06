@@ -3,11 +3,13 @@ use std::io::{BufReader, Read};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
+use sha2::{Sha256, Digest};  
+use std::io::Result;
 
 use fast_float::parse as fast_parse;
 use memmap2::{Mmap, MmapMut};
 use rayon::prelude::*;
-
+use bytemuck;   
 use crate::ann_opt::AnnIndex;
 use crate::utils::vector::{cosine_similarity, normalize_vector_inplace, validate_dimensions};
 use log::{debug, error, info, warn};
@@ -40,10 +42,12 @@ impl Engine {
         let dims = u32::from_le_bytes(mmap[0..4].try_into().unwrap()) as usize;
         let rows = u32::from_le_bytes(mmap[4..8].try_into().unwrap()) as usize;
 
-        let expected_len = 8 + 4 * dims * rows;
+        let vector_bytes_len = 4 * dims * rows;
+        let expected_len = 8 + vector_bytes_len + 32;
+
         if mmap.len() != expected_len {
             error!(
-                "Unexpected binary file size: expected {}, found {}",
+                "❌ Unexpected binary file size: expected {}, found {}",
                 expected_len,
                 mmap.len()
             );
@@ -53,15 +57,30 @@ impl Engine {
             ));
         }
 
+        let data_bytes = &mmap[8..8 + vector_bytes_len];
+        let hash_stored = &mmap[8 + vector_bytes_len..];
+
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(data_bytes);
+        let hash_computed = hasher.finalize();
+
+        if hash_stored != hash_computed.as_slice() {
+            error!("❌ Hash mismatch: binary data may be corrupted");
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Hash mismatch: binary data may be corrupted",
+            ));
+        }
+
         info!(
-            "Loaded binary index: dims={} rows={} ANN={} path={:?}",
+            "✅ Loaded binary index with integrity: dims={} rows={} ANN={} path={:?}",
             dims,
             rows,
             use_ann,
             path.as_ref()
         );
 
-        let data: &[f32] = bytemuck::cast_slice(&mmap[8..]);
+        let data: &[f32] = bytemuck::cast_slice(data_bytes);
         let vectors = Arc::from(data);
 
         let ann_index = if use_ann {
@@ -78,6 +97,7 @@ impl Engine {
             ann_index,
         })
     }
+
 
     pub fn from_csv_parallel<P: AsRef<Path> + Clone>(
         path: P,
@@ -260,26 +280,36 @@ impl Engine {
         })
     }
 
-    pub fn save_to_bin<P: AsRef<Path>>(&self, path: P) -> std::io::Result<()> {
-        let file = File::create(&path)?;
-        let total_bytes = 8 + 4 * self.dims * self.rows;
-        file.set_len(total_bytes as u64)?;
+    pub fn save_to_bin<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+        let path = path.as_ref();
+
+        let vector_bytes_len = 4 * self.dims * self.rows;
+        let total_len = 8 + vector_bytes_len + 32; 
+
+        let file = File::create(path)?;
+        file.set_len(total_len as u64)?;
 
         let mut mmap = unsafe { MmapMut::map_mut(&file)? };
 
         mmap[0..4].copy_from_slice(&(self.dims as u32).to_le_bytes());
         mmap[4..8].copy_from_slice(&(self.rows as u32).to_le_bytes());
 
-        let byte_slice: &[u8] = bytemuck::cast_slice(&self.vectors);
-        mmap[8..].copy_from_slice(byte_slice);
+        let data_bytes: &[u8] = bytemuck::cast_slice(&self.vectors);
+        mmap[8..8 + data_bytes.len()].copy_from_slice(data_bytes);
+
+        let mut hasher = Sha256::new();
+        hasher.update(&data_bytes);
+        let hash = hasher.finalize();
+
+        mmap[8 + data_bytes.len()..].copy_from_slice(&hash);
         mmap.flush()?;
 
-        info!(
-            "Saved engine to binary: path={:?} dims={} rows={} ANN={} ",
-            path.as_ref(),
+        log::info!(
+            "✅ Saved engine to binary: {:?} dims={} rows={} size={} bytes",
+            path,
             self.dims,
             self.rows,
-            self.use_ann
+            total_len
         );
 
         Ok(())
@@ -363,16 +393,17 @@ impl Engine {
       //Ok(results)
     //}
 
-    pub fn top_k_index(&self, idx: usize, k: usize) -> Result<Vec<(usize, f32)>, String> {
+    pub fn top_k_index(&self, idx: usize, k: usize) -> std::result::Result<Vec<(usize, f32)>, String> {
         debug!("Top-k index search → idx={} k={}", idx, k);
 
         let query = self.get_vector(idx).ok_or_else(|| {
             warn!("Invalid index in top_k_index: {}", idx);
-            format!("Invalid index: {}", idx)
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("Invalid index: {}", idx))
         })?;
 
         self.top_k_query(query, k, false)
     }
+
 
     pub fn top_k_subset(
         &self,
@@ -380,12 +411,15 @@ impl Engine {
         subset: &[usize],
         k: usize,
         normalize: bool,
-    ) -> Result<Vec<(usize, f32)>, String> {
+    ) -> std::io::Result<Vec<(usize, f32)>> {
         if query.len() != self.dims {
-            return Err(format!(
-                "Query vector has wrong dimension: expected {}, got {}",
-                self.dims,
-                query.len()
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "Query vector has wrong dimension: expected {}, got {}",
+                    self.dims,
+                    query.len()
+                ),
             ));
         }
 
@@ -425,6 +459,7 @@ impl Engine {
 
         Ok(results)
     }
+
 
     pub fn dims(&self) -> usize {
         self.dims

@@ -1,10 +1,11 @@
 use rayon::prelude::*;
-use std::fs::{File, rename};
+use std::fs::{File, remove_file, rename, create_dir_all, OpenOptions};
 use std::path::Path;
 use wide::f32x8;
 use memmap2::MmapMut;
 use sha2::{Sha256, Digest};
 use crate::ann_opt::AnnIndex;
+use std::io::Read;
 
 pub fn prepare_bin_from_embeddings(
     embeddings: &[f32],
@@ -82,7 +83,25 @@ fn build_ann_index(data: &[f32], dims: usize, rows: usize, seed: u64, ann_path: 
 }
 
 fn write_bin_mmap(data: &[f32], dims: usize, rows: usize, path: &str) -> Result<(), String> {
+    if data.len() != dims * rows {
+        return Err(format!(
+            "❌ Mismatch: data.len() = {}, but dims * rows = {} * {} = {}",
+            data.len(),
+            dims,
+            rows,
+            dims * rows
+        ));
+    }
+
     let tmp_path = format!("{}.tmp", path);
+
+    if let Some(parent) = Path::new(&tmp_path).parent() {
+        create_dir_all(parent).map_err(|e| format!("Failed to create directory: {}", e))?;
+    }
+
+    let _ = std::fs::remove_file(&tmp_path);
+    let _ = std::fs::remove_file(&path);
+
     let data_bytes: &[u8] = unsafe {
         std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * 4)
     };
@@ -99,13 +118,35 @@ fn write_bin_mmap(data: &[f32], dims: usize, rows: usize, path: &str) -> Result<
 
     mmap[..4].copy_from_slice(&(dims as u32).to_le_bytes());
     mmap[4..8].copy_from_slice(&(rows as u32).to_le_bytes());
-
     mmap[8..8 + data_bytes.len()].copy_from_slice(data_bytes);
-
     mmap[8 + data_bytes.len()..].copy_from_slice(&hash);
-
     mmap.flush().map_err(|e| e.to_string())?;
-    rename(tmp_path, path).map_err(|e| e.to_string())?;
+
+    println!("✅ Binary file written to: {}", path);
+    println!("    dims = {}, rows = {}, data.len() = {}", dims, rows, data.len());
+    println!("    expected size = {}", total_size);
+
+    let meta = std::fs::metadata(&tmp_path).map_err(|e| format!("Metadata error: {}", e))?;
+    let actual_size = meta.len();
+    println!("    actual size   = {}", actual_size);
+
+    if actual_size != total_size as u64 {
+        return Err(format!(
+            "❌ Binary size mismatch: expected {}, got {}",
+            total_size, actual_size
+        ));
+    }
+
+    std::fs::rename(&tmp_path, path).map_err(|e| format!("Rename failed: {}", e))?;
+    let mut buf = [0u8; 8];
+    let mut f = File::open(path).map_err(|e| e.to_string())?;
+    f.read_exact(&mut buf).map_err(|e| e.to_string())?;
+    let dims_from_bin = u32::from_le_bytes(buf[0..4].try_into().unwrap());
+    let rows_from_bin = u32::from_le_bytes(buf[4..8].try_into().unwrap());
+    println!("📦 BIN HEADER: dims={}, rows={}", dims_from_bin, rows_from_bin);
 
     Ok(())
 }
+
+
+

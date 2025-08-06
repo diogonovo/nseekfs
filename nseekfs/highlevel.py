@@ -75,6 +75,8 @@ class NSeek:
         if not os.path.exists(bin_path):
             logger.info(f"Creating binary file for level '{level}' at {bin_path}")
             try:
+                print("🧪 BIN PATH:", bin_path)
+
                 path_created = py_prepare_bin_from_embeddings(
                     embeddings.tolist(),  
                     d,
