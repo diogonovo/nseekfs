@@ -1,10 +1,13 @@
 use rayon::prelude::*;
 use std::cmp::Ordering;
-use crate::engine::Engine;
 use wide::f32x8;
+use crate::engine::Engine;
+use std::convert::TryInto;
+
 const LANES: usize = 8;
 
 impl Engine {
+    /// Versão escalar (CPU pura)
     pub fn top_k_query_scalar(
         &self,
         query: &[f32],
@@ -94,7 +97,7 @@ impl Engine {
 
         let mut results: Vec<(usize, f32)> = candidates
             .into_par_iter()
-            .map(|i| {
+            .filter_map(|i| {
                 let start = i * dims;
                 let vec_i = &vector_data[start..start + dims];
 
@@ -112,7 +115,7 @@ impl Engine {
                     total += query_ref[j] * vec_i[j];
                 }
 
-                (i, total)
+                Some((i, total))
             })
             .collect();
 
@@ -137,4 +140,4 @@ impl Engine {
             self.top_k_query_scalar(query, k, normalize)
         }
     }
-} 
+}

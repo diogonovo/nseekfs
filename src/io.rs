@@ -122,6 +122,7 @@ fn write_bin_data(data: &Vec<Vec<f32>>, bin_path: &Path) -> Result<(), String> {
             return Err(format!("Row {} has incorrect dimensions", i));
         }
 
+
         let bytes = bytemuck::cast_slice::<f32, u8>(row);
         writer
             .write_all(bytes)
