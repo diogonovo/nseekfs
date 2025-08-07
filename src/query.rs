@@ -7,12 +7,10 @@ use std::convert::TryInto;
 const LANES: usize = 8;
 
 impl Engine {
-    /// Versão escalar (CPU pura)
     pub fn top_k_query_scalar(
         &self,
         query: &[f32],
         k: usize,
-        normalize: bool,
     ) -> Result<Vec<(usize, f32)>, String> {
         if query.len() != self.dims {
             return Err(format!(
@@ -23,15 +21,8 @@ impl Engine {
         }
 
         let mut query = query.to_vec();
-        if normalize {
-            let norm = query.iter().map(|x| x * x).sum::<f32>().sqrt();
-            if norm <= std::f32::EPSILON {
-                return Err("Query vector has zero norm and cannot be normalized.".to_string());
-            }
-            query.iter_mut().for_each(|x| *x /= norm);
-        }
 
-        let candidates: Vec<usize> = if self.use_ann {
+        let candidates: Vec<usize> = if self.ann {
             match &self.ann_index {
                 Some(index) => index.query_candidates(&query),
                 None => (0..self.rows).collect(),
@@ -58,12 +49,10 @@ impl Engine {
         Ok(results)
     }
 
-    /// Versão otimizada com SIMD + paralelismo
     pub fn top_k_query_simd(
         &self,
         query: &[f32],
         k: usize,
-        normalize: bool,
     ) -> Result<Vec<(usize, f32)>, String> {
         if query.len() != self.dims {
             return Err(format!(
@@ -74,15 +63,8 @@ impl Engine {
         }
 
         let mut query_vec = query.to_vec();
-        if normalize {
-            let norm = query_vec.iter().map(|x| x * x).sum::<f32>().sqrt();
-            if norm <= std::f32::EPSILON {
-                return Err("Query vector has zero norm and cannot be normalized.".to_string());
-            }
-            query_vec.iter_mut().for_each(|x| *x /= norm);
-        }
 
-        let candidates: Vec<usize> = if self.use_ann {
+        let candidates: Vec<usize> = if self.ann {
             match &self.ann_index {
                 Some(index) => index.query_candidates(&query_vec),
                 None => (0..self.rows).collect(),
@@ -127,17 +109,15 @@ impl Engine {
         Ok(results)
     }
 
-    /// Versão auto que escolhe scalar ou simd
     pub fn top_k_query(
         &self,
         query: &[f32],
         k: usize,
-        normalize: bool,
     ) -> Result<Vec<(usize, f32)>, String> {
         if self.dims >= 64 && self.rows >= 1000 {
-            self.top_k_query_simd(query, k, normalize)
+            self.top_k_query_simd(query, k)
         } else {
-            self.top_k_query_scalar(query, k, normalize)
+            self.top_k_query_scalar(query, k)
         }
     }
 }

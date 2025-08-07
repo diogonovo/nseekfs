@@ -1,7 +1,5 @@
-// ann_opt.rs – High-Performance ANN Index (LSH + SIMD-safe + Parallel)
-
 use std::collections::HashMap;
-use rand::{SeedableRng, Rng};
+use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rand_distr::{Normal, Distribution};
 use rayon::prelude::*;

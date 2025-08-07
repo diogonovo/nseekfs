@@ -1,17 +1,12 @@
 use std::fs::File;
-use std::io::{BufReader, Read};
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Instant;
 use sha2::{Sha256, Digest};
-use std::io::Result;
-
-use fast_float::parse as fast_parse;
 use memmap2::{Mmap, MmapMut};
 use rayon::prelude::*;
 use bytemuck;
 use crate::ann_opt::AnnIndex;
-use crate::utils::vector::{cosine_similarity, normalize_vector_inplace, validate_dimensions};
+use crate::utils::vector::{cosine_similarity, normalize_vector_inplace};
 use log::{debug, error, info, warn};
 
 
@@ -20,12 +15,12 @@ pub struct Engine {
     pub vectors: Arc<[f32]>,
     pub dims: usize,
     pub rows: usize,
-    pub use_ann: bool,
+    pub ann: bool,
     pub ann_index: Option<AnnIndex>,
 }
 
 impl Engine {
-    pub fn from_bin<P: AsRef<Path>>(path: P, use_ann: bool) -> std::io::Result<Self> {
+    pub fn from_bin<P: AsRef<Path>>(path: P, ann: bool) -> std::io::Result<Self> {
         let file = File::open(&path)?;
         let mmap = unsafe { Mmap::map(&file)? };
 
@@ -74,14 +69,14 @@ impl Engine {
             "✅ Loaded binary index with integrity: dims={} rows={} ANN={} path={:?}",
             dims,
             rows,
-            use_ann,
+            ann,
             path.as_ref()
         );
 
         let data: &[f32] = bytemuck::cast_slice(data_bytes);
         let vectors = Arc::from(data);
 
-        let ann_index = if use_ann {
+        let ann_index = if ann {
             Some(AnnIndex::build(&vectors, dims, rows, 32, 42))
         } else {
             None
@@ -91,7 +86,7 @@ impl Engine {
             vectors,
             dims,
             rows,
-            use_ann,
+            ann,
             ann_index,
         })
     }
@@ -149,7 +144,7 @@ impl Engine {
             std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("Invalid index: {}", idx))
         })?;
 
-        self.top_k_query(query, k, false)
+        self.top_k_query(query, k)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
     }
 
@@ -158,7 +153,6 @@ impl Engine {
         query: &[f32],
         subset: &[usize],
         k: usize,
-        normalize: bool,
     ) -> std::io::Result<Vec<(usize, f32)>> {
         if query.len() != self.dims {
             return Err(std::io::Error::new(
@@ -172,16 +166,12 @@ impl Engine {
         }
 
         debug!(
-            "Top-k subset search → k={} normalize={} subset_len={}",
+            "Top-k subset search → k={} subset_len={}",
             k,
-            normalize,
             subset.len()
         );
 
         let mut query = query.to_vec();
-        if normalize {
-            normalize_vector_inplace(&mut query);
-        }
 
         let mut results: Vec<(usize, f32)> = subset
             .par_iter()

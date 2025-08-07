@@ -1,5 +1,5 @@
 use rayon::prelude::*;
-use std::fs::{File, remove_file, rename, create_dir_all};
+use std::fs::{File,OpenOptions, remove_file, rename, create_dir_all};
 use std::path::{Path, PathBuf};
 use wide::f32x8;
 use memmap2::MmapMut;
@@ -14,7 +14,7 @@ pub fn prepare_bin_from_embeddings(
     rows: usize,
     base_name: &str,
     level: &str,
-    use_ann: bool,
+    ann: bool,
     normalize: bool,
     seed: u64,
 ) -> Result<PathBuf, String> {
@@ -37,7 +37,7 @@ pub fn prepare_bin_from_embeddings(
 
     let output_path = resolve_bin_path(base_name, level)?;
 
-    if use_ann {
+    if ann {
         let ann_file = output_path.with_extension("ann");
         build_ann_index(&data, dims, rows, seed, &ann_file)?;
     }
@@ -72,9 +72,9 @@ fn chunked_len(len: usize) -> usize {
 
 fn quantize_in_place(data: &mut [f32], level: &str) -> Result<(), String> {
     match level {
-        "f16" => Ok(()), // To be implemented
-        "f8" => Ok(()),  // To be implemented
-        "f64" => Ok(()), // To be implemented
+        "f16" => Ok(()),
+        "f8" => Ok(()),  
+        "f64" => Ok(()), 
         _ => Err("Unsupported quantization level".into())
     }
 }
@@ -108,15 +108,15 @@ fn write_bin_mmap(data: &[f32], dims: usize, rows: usize, path: &Path) -> Result
 
     let tmp_path = path.with_extension("tmp");
     if tmp_path.exists() {
-        std::fs::remove_file(&tmp_path).map_err(|e| {
-            format!("❌ Não foi possível remover ficheiro temporário '{}': {}", tmp_path.display(), e)
-        })?;
+        remove_file(&tmp_path).map_err(|e| format!("❌ Failed to remove tmp '{}': {}", tmp_path.display(), e))?;
     }
 
     if path.exists() {
-        std::fs::remove_file(path).map_err(|e| {
-            format!("❌ Não foi possível sobrescrever ficheiro '{}': {}.\n💡 Sugestão: fecha qualquer aplicação que o esteja a usar ou escolhe outro nome/base.", path.display(), e)
-        })?;
+        remove_file(path).map_err(|e| {
+            format!(
+                "❌ Não foi possível sobrescrever '{}': {}.\n💡 Fecha aplicações que o usem ou muda o nome.",
+                path.display(), e
+            )})?;
     }
 
 
@@ -130,7 +130,14 @@ fn write_bin_mmap(data: &[f32], dims: usize, rows: usize, path: &Path) -> Result
 
     let total_size = 8 + data_bytes.len() + hash.len();
 
-    let file = File::create(&tmp_path).map_err(|e| format!("Failed to create file '{}': {}", tmp_path.display(), e))?;
+    let file = OpenOptions::new()
+    .read(true)  
+    .write(true)
+    .create(true)
+    .truncate(true)
+    .open(&tmp_path)
+    .map_err(|e| format!("Failed to open tmp '{}': {}", tmp_path.display(), e))?;
+
     file.set_len(total_size as u64).map_err(|e| e.to_string())?;
     let mut mmap = unsafe { MmapMut::map_mut(&file).map_err(|e| e.to_string())? };
 

@@ -1,8 +1,6 @@
 use pyo3::prelude::*;
 use pyo3::{exceptions::PyValueError, wrap_pyfunction};
 
-mod ann;
-mod io;
 mod utils;
 mod prebin;
 mod ann_opt;
@@ -11,17 +9,7 @@ mod engine;
 
 use prebin::prepare_bin_from_embeddings;
 use engine::Engine;
-use log::{error, info};
-
-#[pyfunction]
-fn prepare_engine(path: &str, normalize: bool, force: bool, use_ann: bool) -> PyResult<String> {
-    info!(
-        "Preparing engine from path='{}' (normalize={}, force={}, ann={})",
-        path, normalize, force, use_ann
-    );
-    io::write_bin_file(path, normalize, force, use_ann)
-        .map_err(|e| PyValueError::new_err(e))
-}
+use log::info;
 
 #[pyfunction]
 fn py_prepare_bin_from_embeddings(
@@ -29,15 +17,15 @@ fn py_prepare_bin_from_embeddings(
     dims: usize,
     output_path: &str,
     level: &str,
-    use_ann: bool,
+    ann: bool,
     normalize: bool,
     seed: u64,
 ) -> PyResult<String> {
     let rows = embeddings.len();
     let flat: Vec<f32> = embeddings.into_iter().flatten().collect();
 
-    prepare_bin_from_embeddings(&flat, dims, rows, output_path, level, use_ann, normalize, seed)
-        .map(|_| output_path.to_string())
+    prepare_bin_from_embeddings(&flat, dims, rows, output_path, level, ann, normalize, seed)
+        .map(|pathbuf| pathbuf.to_string_lossy().to_string()) 
         .map_err(|e| PyValueError::new_err(e))
 }
 
@@ -49,9 +37,9 @@ struct PySearchEngine {
 #[pymethods]
 impl PySearchEngine {
     #[new]
-    fn new(path: &str, normalize: Option<bool>, use_ann: Option<bool>) -> PyResult<Self> {
-        let use_ann = use_ann.unwrap_or(true);
-        let engine = Engine::from_bin(path, use_ann)
+    fn new(path: &str, normalize: Option<bool>, ann: Option<bool>) -> PyResult<Self> {
+        let ann = ann.unwrap_or(true);
+        let engine = Engine::from_bin(path, ann)
             .map_err(|e| PyValueError::new_err(format!("Error loading engine: {}", e)))?;
 
         Ok(Self { engine })
@@ -76,10 +64,9 @@ impl PySearchEngine {
         &self,
         query: Vec<f32>,
         k: usize,
-        normalize: Option<bool>,
         method: Option<String>,
+        similarity: Option<String>,
     ) -> PyResult<Vec<(usize, f32)>> {
-        let normalize = normalize.unwrap_or(true);
         let method = method.unwrap_or_else(|| "simd".to_string());
 
         if query.len() != self.engine.dims() {
@@ -89,9 +76,9 @@ impl PySearchEngine {
         }
 
         let result = match method.as_str() {
-            "scalar" => self.engine.top_k_query_scalar(&query, k, normalize),
-            "simd" => self.engine.top_k_query_simd(&query, k, normalize),
-            "auto" => self.engine.top_k_query(&query, k, normalize),
+            "scalar" => self.engine.top_k_query_scalar(&query, k),
+            "simd" => self.engine.top_k_query_simd(&query, k),
+            "auto" => self.engine.top_k_query(&query, k),
             other => {
                 return Err(PyValueError::new_err(format!(
                     "Invalid method: '{}'. Use 'simd', 'scalar', or 'auto'.",
@@ -117,9 +104,9 @@ impl PySearchEngine {
             .ok_or_else(|| PyValueError::new_err("Invalid index"))?;
 
         let result = match method.as_str() {
-            "scalar" => self.engine.top_k_query_scalar(query, k, false),
-            "simd" => self.engine.top_k_query_simd(query, k, false),
-            "auto" => self.engine.top_k_query(query, k, false),
+            "scalar" => self.engine.top_k_query_scalar(query, k),
+            "simd" => self.engine.top_k_query_simd(query, k),
+            "auto" => self.engine.top_k_query(query, k),
             other => {
                 return Err(PyValueError::new_err(format!(
                     "Invalid method: '{}'. Use 'simd', 'scalar', or 'auto'.",
@@ -136,10 +123,8 @@ impl PySearchEngine {
         query: Vec<f32>,
         subset: Vec<usize>,
         k: usize,
-        normalize: Option<bool>,
         method: Option<String>,
     ) -> PyResult<Vec<(usize, f32)>> {
-        let normalize = normalize.unwrap_or(true);
         let method = method.unwrap_or_else(|| "simd".to_string());
 
         if query.len() != self.engine.dims() {
@@ -150,7 +135,7 @@ impl PySearchEngine {
 
         let result = match method.as_str() {
             "scalar" | "simd" | "auto" => {
-                self.engine.top_k_subset(&query, &subset, k, normalize)
+                self.engine.top_k_subset(&query, &subset, k)
             }
             other => {
                 return Err(PyValueError::new_err(format!(
@@ -169,7 +154,6 @@ fn nseekfs(_py: Python, m: &PyModule) -> PyResult<()> {
     crate::utils::logger::init_logging();
 
     m.add_class::<PySearchEngine>()?;
-    m.add_function(wrap_pyfunction!(prepare_engine, m)?)?;
     m.add_function(wrap_pyfunction!(py_prepare_bin_from_embeddings, m)?)?;
 
     Ok(())

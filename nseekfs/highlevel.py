@@ -72,12 +72,12 @@ class NSeek:
                     normalize=normalize_flag,
                     seed=42
                 )
-                engine = PySearchEngine(created_path, ann=ann)
+                engine = PySearchEngine(created_path,normalize_flag, ann=ann)
             except Exception as e:
                 logger.error(f"Binary creation failed: {e}")
                 raise RuntimeError(f"Failed to create binary for level '{level}': {e}")
         else:
-            engine = PySearchEngine(str(bin_path), ann=ann)
+            engine = PySearchEngine(str(bin_path),normalize_flag , ann=ann)
 
         return cls(engine=engine, level=level, normalized=(normalized is not False))
 
