@@ -40,7 +40,7 @@ impl Engine {
         let rows = u32::from_le_bytes(mmap[4..8].try_into().unwrap()) as usize;
 
         let vector_bytes_len = 4 * dims * rows;
-        let expected_len = 8 + vector_bytes_len + 32;
+        let expected_len = 8 + vector_bytes_len;
 
         if mmap.len() != expected_len {
             error!(
@@ -68,7 +68,7 @@ impl Engine {
         let vectors = Arc::from(data);
 
         let ann_index = if use_ann {
-            Some(AnnIndex::build(&vectors, dims, rows, 32, 42))
+            Some(AnnIndex::build(&vectors, dims, rows, 16, 42))
         } else {
             None
         };
@@ -86,7 +86,7 @@ impl Engine {
         let path = path.as_ref();
 
         let vector_bytes_len = 4 * self.dims * self.rows;
-        let total_len = 8 + vector_bytes_len + 32;
+        let total_len = 8 + vector_bytes_len;
 
         let file = File::create(path)?;
         file.set_len(total_len as u64)?;

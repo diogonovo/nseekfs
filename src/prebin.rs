@@ -83,7 +83,7 @@ fn build_ann_index(data: &[f32], dims: usize, rows: usize, seed: u64, ann_path: 
         std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create ANN directory: {}", e))?;
     }
 
-    let ann = AnnIndex::build(data, dims, rows, 32, seed);
+    let ann = AnnIndex::build(data, dims, rows, 16, seed);
     ann.save(ann_path).map_err(|e| format!("Failed to save ANN: {}", e))?;
     Ok(())
 }
