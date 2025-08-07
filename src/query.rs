@@ -7,20 +7,7 @@ use std::convert::TryInto;
 const LANES: usize = 8;
 
 impl Engine {
-    
-    fn ensure_minimum_candidates(&self, mut candidates: Vec<usize>, k: usize) -> Vec<usize> {
-        if candidates.len() < k {
-            println!(
-                "⚠️ ANN returned only {} candidates (requested {}). Falling back to brute-force.",
-                candidates.len(),
-                k
-            );
-            candidates = (0..self.rows).collect();
-        }
-        candidates
-    }
-
-
+    /// Versão escalar (CPU pura)
     pub fn top_k_query_scalar(
         &self,
         query: &[f32],
@@ -44,15 +31,14 @@ impl Engine {
             query.iter_mut().for_each(|x| *x /= norm);
         }
 
-        let candidates = if self.use_ann {
+        let candidates: Vec<usize> = if self.use_ann {
             match &self.ann_index {
-                Some(index) => self.ensure_minimum_candidates(index.query_candidates(&query), k),
+                Some(index) => index.query_candidates(&query),
                 None => (0..self.rows).collect(),
             }
         } else {
             (0..self.rows).collect()
         };
-
 
         let mut results: Vec<(usize, f32)> = candidates
             .into_par_iter()
@@ -96,9 +82,9 @@ impl Engine {
             query_vec.iter_mut().for_each(|x| *x /= norm);
         }
 
-        let candidates = if self.use_ann {
+        let candidates: Vec<usize> = if self.use_ann {
             match &self.ann_index {
-                Some(index) => self.ensure_minimum_candidates(index.query_candidates(&query_vec), k),
+                Some(index) => index.query_candidates(&query_vec),
                 None => (0..self.rows).collect(),
             }
         } else {

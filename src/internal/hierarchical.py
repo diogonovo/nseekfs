@@ -31,7 +31,7 @@ class HierarchicalEngine:
             path = levels.get(level)
             if path:
                 try:
-                    self.engines[level] = PySearchEngine(path, use_ann=not disable_ann)
+                    self.engines[level] = PySearchEngine(path, ann=not disable_ann)
                     self.level_order.append(level)
                     logger.info(f"Loaded level '{level}' from {path}")
                 except Exception as e:

@@ -9,7 +9,7 @@ pub fn write_bin_file(
     csv_path: &str,
     normalize: bool,
     force: bool,
-    use_ann: bool,
+    ann: bool,
 ) -> Result<String, String> {
     let path = Path::new(csv_path);
 
@@ -21,7 +21,7 @@ pub fn write_bin_file(
             .ok_or("Invalid base name")?
     };
 
-    let bin_filename = if use_ann {
+    let bin_filename = if ann {
         format!("{}_f32_ann.bin", stem)
     } else {
         format!("{}_f32.bin", stem)
@@ -58,7 +58,7 @@ pub fn write_bin_from_embeddings(
     base_path: &str,
     precision: &str,
     normalize: bool,
-    use_ann: bool,
+    ann: bool,
 ) -> Result<String, String> {
     if data.is_empty() || data[0].is_empty() {
         error!("Received empty or malformed embeddings");
@@ -75,7 +75,7 @@ pub fn write_bin_from_embeddings(
         normalize_matrix(data);
     }
 
-    let suffix = if use_ann {
+    let suffix = if ann {
         format!("{}_ann.bin", precision)
     } else {
         format!("{}.bin", precision)

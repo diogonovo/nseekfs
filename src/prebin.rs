@@ -1,16 +1,18 @@
 use rayon::prelude::*;
-use std::fs::{File, OpenOptions, remove_file, rename, create_dir_all};
+use std::fs::{File, remove_file, rename, create_dir_all};
 use std::path::{Path, PathBuf};
 use wide::f32x8;
 use memmap2::MmapMut;
+use sha2::{Sha256, Digest};
 use crate::ann_opt::AnnIndex;
-use std::io::{Read, Write};  
+use std::io::Read;
+use dirs;
 
 pub fn prepare_bin_from_embeddings(
     embeddings: &[f32],
     dims: usize,
     rows: usize,
-    output_path_str: &str,
+    base_name: &str,
     level: &str,
     use_ann: bool,
     normalize: bool,
@@ -33,8 +35,7 @@ pub fn prepare_bin_from_embeddings(
         quantize_in_place(&mut data, level)?;
     }
 
-    // Usa o caminho passado pelo Python (100% respeitado agora)
-    let output_path = PathBuf::from(output_path_str);
+    let output_path = resolve_bin_path(base_name, level)?;
 
     if use_ann {
         let ann_file = output_path.with_extension("ann");
@@ -83,10 +84,12 @@ fn build_ann_index(data: &[f32], dims: usize, rows: usize, seed: u64, ann_path: 
         std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create ANN directory: {}", e))?;
     }
 
-    let ann = AnnIndex::build(data, dims, rows, 16, seed);
+    let ann = AnnIndex::build(data, dims, rows, 32, seed);
     ann.save(ann_path).map_err(|e| format!("Failed to save ANN: {}", e))?;
     Ok(())
 }
+
+
 
 fn write_bin_mmap(data: &[f32], dims: usize, rows: usize, path: &Path) -> Result<(), String> {
     if data.len() != dims * rows {
@@ -104,46 +107,41 @@ fn write_bin_mmap(data: &[f32], dims: usize, rows: usize, path: &Path) -> Result
     }
 
     let tmp_path = path.with_extension("tmp");
-
     if tmp_path.exists() {
-        remove_file(&tmp_path).map_err(|e| format!("❌ Failed to remove tmp '{}': {}", tmp_path.display(), e))?;
+        std::fs::remove_file(&tmp_path).map_err(|e| {
+            format!("❌ Não foi possível remover ficheiro temporário '{}': {}", tmp_path.display(), e)
+        })?;
     }
 
     if path.exists() {
-        remove_file(path).map_err(|e| {
-            format!(
-                "❌ Não foi possível sobrescrever '{}': {}.\n💡 Fecha aplicações que o usem ou muda o nome.",
-                path.display(), e
-            )
+        std::fs::remove_file(path).map_err(|e| {
+            format!("❌ Não foi possível sobrescrever ficheiro '{}': {}.\n💡 Sugestão: fecha qualquer aplicação que o esteja a usar ou escolhe outro nome/base.", path.display(), e)
         })?;
     }
+
 
     let data_bytes: &[u8] = unsafe {
         std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * 4)
     };
 
-    let total_size = 8 + data_bytes.len();
+    let mut hasher = Sha256::new();
+    hasher.update(data_bytes);
+    let hash = hasher.finalize();
 
-    let file = OpenOptions::new()
-        .read(true)   // ✅ necessário para mmap no Windows
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(&tmp_path)
-        .map_err(|e| format!("Failed to open tmp '{}': {}", tmp_path.display(), e))?;
+    let total_size = 8 + data_bytes.len() + hash.len();
 
+    let file = File::create(&tmp_path).map_err(|e| format!("Failed to create file '{}': {}", tmp_path.display(), e))?;
     file.set_len(total_size as u64).map_err(|e| e.to_string())?;
     let mut mmap = unsafe { MmapMut::map_mut(&file).map_err(|e| e.to_string())? };
 
     mmap[..4].copy_from_slice(&(dims as u32).to_le_bytes());
     mmap[4..8].copy_from_slice(&(rows as u32).to_le_bytes());
     mmap[8..8 + data_bytes.len()].copy_from_slice(data_bytes);
+    mmap[8 + data_bytes.len()..].copy_from_slice(&hash);
     mmap.flush().map_err(|e| e.to_string())?;
 
-    let actual_size = std::fs::metadata(&tmp_path)
-        .map_err(|e| format!("Metadata error: {}", e))?
-        .len();
-
+    let meta = std::fs::metadata(&tmp_path).map_err(|e| format!("Metadata error: {}", e))?;
+    let actual_size = meta.len();
     if actual_size != total_size as u64 {
         return Err(format!(
             "❌ Binary size mismatch: expected {}, got {}",
@@ -163,4 +161,16 @@ fn write_bin_mmap(data: &[f32], dims: usize, rows: usize, path: &Path) -> Result
     Ok(())
 }
 
+fn resolve_bin_path(base_name: &str, level: &str) -> Result<PathBuf, String> {
+    let home = dirs::home_dir().ok_or("Could not determine home directory")?;
+    let base = home.join(".nseek").join("indexes").join(base_name);
 
+    if let Err(e) = create_dir_all(&base) {
+        let fallback = std::env::temp_dir().join("nseek_fallback").join(base_name);
+        create_dir_all(&fallback).map_err(|e| format!("❌ Falhou fallback: {}", e))?;
+        return Ok(fallback.join(format!("{}.bin", level)));
+    }
+
+
+    Ok(base.join(format!("{}.bin", level)))
+}

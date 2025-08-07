@@ -43,7 +43,7 @@ bin_created = prepare_engine_from_embeddings(
     base_path=base_path,
     precision=level,
     normalize=True,
-    use_ann=False
+    ann=False
 )
 print(f"✅ Binário criado: {bin_created} [{time.time() - t0:.2f}s]")
 
@@ -52,7 +52,7 @@ print(f"✅ Binário criado: {bin_created} [{time.time() - t0:.2f}s]")
 # ========================
 print("\n⚙️ A carregar engine...")
 t0 = time.time()
-engine = PySearchEngine(bin_created, use_ann=True)
+engine = PySearchEngine(bin_created, ann=True)
 print(f"✅ Engine carregada [{time.time() - t0:.2f}s]")
 
 # ========================

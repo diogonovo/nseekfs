@@ -12,7 +12,6 @@ mod engine;
 use prebin::prepare_bin_from_embeddings;
 use engine::Engine;
 use log::{error, info};
-use std::path::PathBuf;
 
 #[pyfunction]
 fn prepare_engine(path: &str, normalize: bool, force: bool, use_ann: bool) -> PyResult<String> {
@@ -28,7 +27,7 @@ fn prepare_engine(path: &str, normalize: bool, force: bool, use_ann: bool) -> Py
 fn py_prepare_bin_from_embeddings(
     embeddings: Vec<Vec<f32>>,
     dims: usize,
-    output_path: &str,  // ← caminho absoluto/relativo diretamente do Python
+    output_path: &str,
     level: &str,
     use_ann: bool,
     normalize: bool,

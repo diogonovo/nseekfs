@@ -33,7 +33,7 @@ from nseekfs import NSeek
 engine = NSeek.from_embeddings(
     embeddings=my_vectors,     # np.ndarray, List[List[float]], or path to .npy / .csv
     level="f16",               # "f8", "f16", "f32", or "f64"
-    use_ann=True,              # enables ANN indexing
+    ann=True,              # enables ANN indexing
     base_dir="nseek_indexes",  # where to store .bin files
     base_name="my_index"
 )
@@ -66,7 +66,7 @@ You can provide your embeddings as:
 
 ## ⚡ ANN (Approximate Nearest Neighbors)
 
-- Enabled via `use_ann=True` during engine creation
+- Enabled via `ann=True` during engine creation
 - Uses random hyperplane hashing for fast lookup
 - Fully integrated into the `.bin` index
 
@@ -90,7 +90,7 @@ Each file stores the quantized and indexed representation of your vectors.
 |---------------|----------------------------------------------|
 | `embeddings`  | Embeddings as array, list or file            |
 | `level`       | Quantization: `"f8"`, `"f16"`, `"f32"`, `"f64"` |
-| `use_ann`     | Enable/disable ANN indexing                  |
+| `ann`     | Enable/disable ANN indexing                  |
 | `base_dir`    | Directory where `.bin` files are stored      |
 | `base_name`   | Subdirectory/index name                      |
 

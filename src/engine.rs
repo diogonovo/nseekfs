@@ -3,6 +3,7 @@ use std::io::{BufReader, Read};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
+use sha2::{Sha256, Digest};
 use std::io::Result;
 
 use fast_float::parse as fast_parse;
@@ -40,7 +41,7 @@ impl Engine {
         let rows = u32::from_le_bytes(mmap[4..8].try_into().unwrap()) as usize;
 
         let vector_bytes_len = 4 * dims * rows;
-        let expected_len = 8 + vector_bytes_len;
+        let expected_len = 8 + vector_bytes_len + 32;
 
         if mmap.len() != expected_len {
             error!(
@@ -55,6 +56,19 @@ impl Engine {
         }
 
         let data_bytes = &mmap[8..8 + vector_bytes_len];
+        let hash_stored = &mmap[8 + vector_bytes_len..];
+
+        let mut hasher = Sha256::new();
+        hasher.update(data_bytes);
+        let hash_computed = hasher.finalize();
+
+        if hash_stored != hash_computed.as_slice() {
+            error!("❌ Hash mismatch: binary data may be corrupted");
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Hash mismatch: binary data may be corrupted",
+            ));
+        }
 
         info!(
             "✅ Loaded binary index with integrity: dims={} rows={} ANN={} path={:?}",
@@ -68,7 +82,7 @@ impl Engine {
         let vectors = Arc::from(data);
 
         let ann_index = if use_ann {
-            Some(AnnIndex::build(&vectors, dims, rows, 16, 42))
+            Some(AnnIndex::build(&vectors, dims, rows, 32, 42))
         } else {
             None
         };
@@ -86,7 +100,7 @@ impl Engine {
         let path = path.as_ref();
 
         let vector_bytes_len = 4 * self.dims * self.rows;
-        let total_len = 8 + vector_bytes_len;
+        let total_len = 8 + vector_bytes_len + 32;
 
         let file = File::create(path)?;
         file.set_len(total_len as u64)?;
@@ -99,6 +113,11 @@ impl Engine {
         let data_bytes: &[u8] = bytemuck::cast_slice(&self.vectors);
         mmap[8..8 + data_bytes.len()].copy_from_slice(data_bytes);
 
+        let mut hasher = Sha256::new();
+        hasher.update(&data_bytes);
+        let hash = hasher.finalize();
+
+        mmap[8 + data_bytes.len()..].copy_from_slice(&hash);
         mmap.flush()?;
 
         log::info!(

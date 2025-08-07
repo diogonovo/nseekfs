@@ -5,6 +5,7 @@ use rand::{SeedableRng, Rng};
 use rand::rngs::StdRng;
 use rand_distr::{Normal, Distribution};
 use rayon::prelude::*;
+use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::{BufWriter, BufReader, Write, Read};
 use std::path::Path;
@@ -15,7 +16,8 @@ pub struct AnnIndex {
     pub dims: usize,
     pub bits: usize,
     pub projections: Vec<Vec<f32>>,
-    pub buckets: HashMap<u64, Vec<usize>>
+    pub buckets: HashMap<u64, Vec<usize>>,
+    pub checksum: [u8; 32],
 }
 
 impl AnnIndex {
@@ -47,11 +49,14 @@ impl AnnIndex {
             guard.entry(hash).or_default().push(i);
         });
 
+        let checksum = Self::compute_checksum(vectors);
+
         Self {
             dims,
             bits,
             projections,
             buckets: buckets.into_inner().unwrap(),
+            checksum,
         }
     }
 
@@ -100,6 +105,7 @@ impl AnnIndex {
             }
         }
 
+        file.write_all(&self.checksum)?;
         Ok(())
     }
 
@@ -121,6 +127,14 @@ impl AnnIndex {
                 file.read_exact(&mut f32_buf)?;
                 *val = f32::from_le_bytes(f32_buf);
             }
+        }
+
+        let mut checksum = [0u8; 32];
+        file.read_exact(&mut checksum)?;
+
+        let actual = Self::compute_checksum(vectors);
+        if checksum != actual {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Checksum mismatch"));
         }
 
         let rows = vectors.len() / dims;
@@ -147,6 +161,12 @@ impl AnnIndex {
             bits,
             projections,
             buckets: buckets.into_inner().unwrap(),
+            checksum,
         })
+    }
+
+    fn compute_checksum(vectors: &[f32]) -> [u8; 32] {
+        let bytes = bytemuck::cast_slice(vectors);
+        Sha256::digest(bytes).into()
     }
 }

@@ -29,7 +29,7 @@ path = prepare_engine_from_embeddings(
     base_path=base_path,
     precision=level,
     normalize=True,
-    use_ann=False
+    ann=False
 )
 print(f"✅ Binário guardado em: {path} [{time.time() - t0:.2f}s]")
 
@@ -38,7 +38,7 @@ print(f"✅ Binário guardado em: {path} [{time.time() - t0:.2f}s]")
 # ========================
 print("\n⚙️ A carregar engine a partir do binário...")
 t0 = time.time()
-engine = PySearchEngine(path, use_ann=True)
+engine = PySearchEngine(path, ann=True)
 print(f"✅ Engine carregada do binário [{time.time() - t0:.2f}s]")
 
 # ========================

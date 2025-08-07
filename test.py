@@ -10,7 +10,7 @@ print("⚙️ Criar motor...")
 engine = NSeek.from_embeddings(
     embeddings=embeddings,
     level="f32",
-    use_ann=True,
+    ann=True,
     base_dir="nseek_test",
     base_name="bench"
 )
