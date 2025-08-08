@@ -10,25 +10,48 @@ mod engine;
 use prebin::prepare_bin_from_embeddings;
 use engine::Engine;
 use log::info;
+use std::path::Path;
+use pyo3::types::PyString;
+use numpy::PyReadonlyArray2;
 
 #[pyfunction]
-fn py_prepare_bin_from_embeddings(
-    embeddings: Vec<Vec<f32>>,
-    dims: usize,
-    output_path: &str,
+pub fn py_prepare_bin_from_embeddings(
+    embeddings: PyReadonlyArray2<f32>,  
+    base_name: String,
     level: &str,
     ann: bool,
     normalize: bool,
     seed: u64,
+    output_dir: Option<String>,
 ) -> PyResult<String> {
-    let rows = embeddings.len();
-    let flat: Vec<f32> = embeddings.into_iter().flatten().collect();
+    let shape = embeddings.shape();
+    if shape.len() != 2 {
+        return Err(PyValueError::new_err("Input must be a 2D NumPy array"));
+    }
+    let rows = shape[0];
+    let dims = shape[1];
 
-    prepare_bin_from_embeddings(&flat, dims, rows, output_path, level, ann, normalize, seed)
-        .map(|pathbuf| pathbuf.to_string_lossy().to_string()) 
-        .map_err(|e| PyValueError::new_err(e))
+    // ✅ Converter para slice 1D contínuo (sem cópias)
+    let flat = embeddings.as_slice()?;
+
+    let output_path_opt = output_dir.as_deref().map(Path::new);
+
+    prepare_bin_from_embeddings(
+        flat,
+        dims,
+        rows,
+        &base_name,
+        level,
+        output_path_opt,
+        ann,
+        normalize,
+        seed,
+    )
+    .map(|pathbuf| pathbuf.to_string_lossy().to_string())
+    .map_err(PyValueError::new_err)
 }
 
+/// Classe PySearchEngine exposta a Python para carregar e fazer queries em motores binários
 #[pyclass]
 struct PySearchEngine {
     engine: Engine,
@@ -39,8 +62,9 @@ impl PySearchEngine {
     #[new]
     fn new(path: &str, normalize: Option<bool>, ann: Option<bool>) -> PyResult<Self> {
         let ann = ann.unwrap_or(true);
+
         let engine = Engine::from_bin(path, ann)
-            .map_err(|e| PyValueError::new_err(format!("Error loading engine: {}", e)))?;
+            .map_err(|e| PyValueError::new_err(format!("❌ Error loading engine: {}", e)))?;
 
         Ok(Self { engine })
     }
@@ -65,7 +89,7 @@ impl PySearchEngine {
         query: Vec<f32>,
         k: usize,
         method: Option<String>,
-        similarity: Option<String>,
+        similarity: Option<String>,  
     ) -> PyResult<Vec<(usize, f32)>> {
         let method = method.unwrap_or_else(|| "simd".to_string());
 
@@ -87,7 +111,7 @@ impl PySearchEngine {
             }
         };
 
-        result.map_err(|e| PyValueError::new_err(e))
+        result.map_err(PyValueError::new_err)
     }
 
     fn top_k_similar(
@@ -115,7 +139,7 @@ impl PySearchEngine {
             }
         };
 
-        result.map_err(|e| PyValueError::new_err(e))
+        result.map_err(PyValueError::new_err)
     }
 
     fn top_k_subset(
@@ -134,9 +158,7 @@ impl PySearchEngine {
         }
 
         let result = match method.as_str() {
-            "scalar" | "simd" | "auto" => {
-                self.engine.top_k_subset(&query, &subset, k)
-            }
+            "scalar" | "simd" | "auto" => self.engine.top_k_subset(&query, &subset, k),
             other => {
                 return Err(PyValueError::new_err(format!(
                     "Invalid method: '{}'. Use 'simd', 'scalar', or 'auto'.",
@@ -145,16 +167,14 @@ impl PySearchEngine {
             }
         };
 
-        result.map_err(|e| PyValueError::new_err(e))
+        result.map_err(PyValueError::new_err)
     }
 }
 
 #[pymodule]
 fn nseekfs(_py: Python, m: &PyModule) -> PyResult<()> {
     crate::utils::logger::init_logging();
-
     m.add_class::<PySearchEngine>()?;
     m.add_function(wrap_pyfunction!(py_prepare_bin_from_embeddings, m)?)?;
-
     Ok(())
 }

@@ -3,8 +3,27 @@ use std::cmp::Ordering;
 use wide::f32x8;
 use crate::engine::Engine;
 use std::convert::TryInto;
+use pdqselect::select_by;
 
 const LANES: usize = 8;
+
+fn compute_score(query: &[f32], vec: &[f32]) -> f32 {
+    let chunks = query.len() / LANES;
+    let mut simd_sum = f32x8::splat(0.0);
+
+    for i in 0..chunks {
+        let q = f32x8::new(query[i * LANES..i * LANES + 8].try_into().unwrap());
+        let v = f32x8::new(vec[i * LANES..i * LANES + 8].try_into().unwrap());
+        simd_sum += q * v;
+    }
+
+    let mut total = simd_sum.reduce_add();
+    for i in (chunks * LANES)..query.len() {
+        total += query[i] * vec[i];
+    }
+
+    total
+}
 
 impl Engine {
     pub fn top_k_query_scalar(
@@ -20,11 +39,11 @@ impl Engine {
             ));
         }
 
-        let mut query = query.to_vec();
+        let query_ref = query;
 
         let candidates: Vec<usize> = if self.ann {
             match &self.ann_index {
-                Some(index) => index.query_candidates(&query),
+                Some(index) => index.query_candidates(query_ref),
                 None => (0..self.rows).collect(),
             }
         } else {
@@ -36,13 +55,13 @@ impl Engine {
             .map(|i| {
                 let offset = i * self.dims;
                 let vec_i = &self.vectors[offset..offset + self.dims];
-                let score = query.iter().zip(vec_i).map(|(a, b)| a * b).sum::<f32>();
+                let score = query_ref.iter().zip(vec_i).map(|(a, b)| a * b).sum::<f32>();
                 (i, score)
             })
             .collect();
 
-        results.par_sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal));
         if results.len() > k {
+            select_by(&mut results, k, |a, b| b.1.total_cmp(&a.1));
             results.truncate(k);
         }
 
@@ -62,47 +81,29 @@ impl Engine {
             ));
         }
 
-        let mut query_vec = query.to_vec();
+        let query_ref = query;
 
         let candidates: Vec<usize> = if self.ann {
             match &self.ann_index {
-                Some(index) => index.query_candidates(&query_vec),
+                Some(index) => index.query_candidates(query_ref),
                 None => (0..self.rows).collect(),
             }
         } else {
             (0..self.rows).collect()
         };
 
-        let vector_data = &self.vectors;
-        let dims = self.dims;
-        let query_ref = &query_vec;
-
         let mut results: Vec<(usize, f32)> = candidates
             .into_par_iter()
-            .filter_map(|i| {
-                let start = i * dims;
-                let vec_i = &vector_data[start..start + dims];
-
-                let mut simd_sum = f32x8::splat(0.0);
-                let chunks = dims / LANES;
-
-                for j in 0..chunks {
-                    let q_chunk = f32x8::new(query_ref[j * LANES..(j + 1) * LANES].try_into().unwrap());
-                    let v_chunk = f32x8::new(vec_i[j * LANES..(j + 1) * LANES].try_into().unwrap());
-                    simd_sum += q_chunk * v_chunk;
-                }
-
-                let mut total = simd_sum.reduce_add();
-                for j in (chunks * LANES)..dims {
-                    total += query_ref[j] * vec_i[j];
-                }
-
-                Some((i, total))
+            .map(|i| {
+                let offset = i * self.dims;
+                let vec_i = &self.vectors[offset..offset + self.dims];
+                let score = compute_score(query_ref, vec_i);
+                (i, score)
             })
             .collect();
 
-        results.par_sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal));
         if results.len() > k {
+            select_by(&mut results, k, |a, b| b.1.total_cmp(&a.1));
             results.truncate(k);
         }
 

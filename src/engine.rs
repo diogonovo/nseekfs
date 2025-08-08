@@ -1,14 +1,11 @@
 use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
-use sha2::{Sha256, Digest};
 use memmap2::{Mmap, MmapMut};
 use rayon::prelude::*;
-use bytemuck;
 use crate::ann_opt::AnnIndex;
 use crate::utils::vector::{cosine_similarity, normalize_vector_inplace};
 use log::{debug, error, info, warn};
-
 
 #[derive(Clone)]
 pub struct Engine {
@@ -16,7 +13,7 @@ pub struct Engine {
     pub dims: usize,
     pub rows: usize,
     pub ann: bool,
-    pub ann_index: Option<AnnIndex>,
+    pub ann_index: Option<Arc<AnnIndex>>,
 }
 
 impl Engine {
@@ -36,8 +33,7 @@ impl Engine {
         let rows = u32::from_le_bytes(mmap[4..8].try_into().unwrap()) as usize;
 
         let vector_bytes_len = 4 * dims * rows;
-        let expected_len = 8 + vector_bytes_len + 32;
-
+        let expected_len = 8 + vector_bytes_len;
         if mmap.len() != expected_len {
             error!(
                 "❌ Unexpected binary file size: expected {}, found {}",
@@ -50,34 +46,32 @@ impl Engine {
             ));
         }
 
-        let data_bytes = &mmap[8..8 + vector_bytes_len];
-        let hash_stored = &mmap[8 + vector_bytes_len..];
-
-        let mut hasher = Sha256::new();
-        hasher.update(data_bytes);
-        let hash_computed = hasher.finalize();
-
-        if hash_stored != hash_computed.as_slice() {
-            error!("❌ Hash mismatch: binary data may be corrupted");
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Hash mismatch: binary data may be corrupted",
-            ));
-        }
+        let data_bytes = &mmap[8..];
 
         info!(
-            "✅ Loaded binary index with integrity: dims={} rows={} ANN={} path={:?}",
-            dims,
-            rows,
-            ann,
-            path.as_ref()
+            "✅ Loaded binary index: dims={} rows={} ANN={} path={:?}",
+            dims, rows, ann, path.as_ref()
         );
 
-        let data: &[f32] = bytemuck::cast_slice(data_bytes);
+        let data: &[f32] = unsafe {
+            std::slice::from_raw_parts(data_bytes.as_ptr() as *const f32, dims * rows)
+        };
         let vectors = Arc::from(data);
 
         let ann_index = if ann {
-            Some(AnnIndex::build(&vectors, dims, rows, 32, 42))
+            let ann_path = path.as_ref().with_extension("ann");
+            if ann_path.exists() {
+                match AnnIndex::load(&ann_path, &vectors) {
+                    Ok(index) => Some(Arc::new(index)),
+                    Err(e) => {
+                        warn!("⚠️ Failed to load ANN index from {:?}: {}", ann_path, e);
+                        None
+                    }
+                }
+            } else {
+                warn!("⚠️ ANN requested but file {:?} not found", ann_path);
+                None
+            }
         } else {
             None
         };
@@ -95,7 +89,7 @@ impl Engine {
         let path = path.as_ref();
 
         let vector_bytes_len = 4 * self.dims * self.rows;
-        let total_len = 8 + vector_bytes_len + 32;
+        let total_len = 8 + vector_bytes_len;
 
         let file = File::create(path)?;
         file.set_len(total_len as u64)?;
@@ -105,14 +99,17 @@ impl Engine {
         mmap[0..4].copy_from_slice(&(self.dims as u32).to_le_bytes());
         mmap[4..8].copy_from_slice(&(self.rows as u32).to_le_bytes());
 
-        let data_bytes: &[u8] = bytemuck::cast_slice(&self.vectors);
-        mmap[8..8 + data_bytes.len()].copy_from_slice(data_bytes);
+        let src = self.vectors.as_ref();
+        let dst = &mut mmap[8..];
 
-        let mut hasher = Sha256::new();
-        hasher.update(&data_bytes);
-        let hash = hasher.finalize();
+        unsafe {
+            let src_bytes = std::slice::from_raw_parts(
+                src.as_ptr() as *const u8,
+                vector_bytes_len,
+            );
+            dst.copy_from_slice(src_bytes);
+        }
 
-        mmap[8 + data_bytes.len()..].copy_from_slice(&hash);
         mmap.flush()?;
 
         log::info!(
@@ -147,6 +144,39 @@ impl Engine {
         self.top_k_query(query, k)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
     }
+
+    //pub fn top_k_query(&self, query: &[f32], k: usize) -> Result<Vec<(usize, f32)>, String> {
+    //    if query.len() != self.dims {
+    //        return Err(format!(
+    //            "Query vector dimension mismatch: expected {}, got {}",
+    //            self.dims,
+    //            query.len()
+    //        ));
+    //    }
+//
+    //    let candidates: Vec<usize> = if self.ann {
+    //        match &self.ann_index {
+    //            Some(ann) => ann.query_candidates(query),
+    //            None => return Err("ANN enabled but index is None".into()),
+    //        }
+    //    } else {
+    //        (0..self.rows).collect()
+    //    };
+//
+    //    let results: Vec<(usize, f32)> = candidates
+    //        .par_iter()
+    //        .filter_map(|&i| {
+    //            let vec_i = &self.vectors[i * self.dims..(i + 1) * self.dims];
+    //            let score = cosine_similarity(query, vec_i);
+    //            Some((i, score))
+    //        })
+    //        .collect();
+//
+    //    let mut sorted = results;
+    //    sorted.par_sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
+    //    sorted.truncate(k);
+    //    Ok(sorted)
+    //}
 
     pub fn top_k_subset(
         &self,

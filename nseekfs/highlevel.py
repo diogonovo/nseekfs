@@ -2,9 +2,10 @@ import numpy as np
 from typing import List, Union, Optional
 import logging
 from pathlib import Path
+import time
 
 logger = logging.getLogger(__name__)
-
+start = time.time()
 
 class NSeek:
     """
@@ -23,7 +24,8 @@ class NSeek:
         level: str = "f32",
         normalized: Optional[bool] = True,
         ann: bool = True,
-        base_name: str = "default"
+        base_name: str = "default",
+        output_dir: Optional[Union[str, Path]] = None,
     ) -> "NSeek":
         from .nseekfs import py_prepare_bin_from_embeddings, PySearchEngine
 
@@ -34,6 +36,7 @@ class NSeek:
                 embeddings = np.loadtxt(embeddings, delimiter=",")
             else:
                 raise ValueError("Unsupported file format. Only .npy and .csv are supported.")
+
         embeddings = np.asarray(embeddings, dtype=np.float32)
 
         if embeddings.ndim != 2:
@@ -47,38 +50,47 @@ class NSeek:
         if level not in {"f8", "f16", "f32", "f64"}:
             raise ValueError("Invalid level. Must be one of: 'f8', 'f16', 'f32', 'f64'.")
 
+        # ⚠️ Corrigido: lógica de normalização
         if normalized is True:
-            normalize_flag = False
-        elif normalized is None:
-            normalize_flag = True
+            normalize_flag = False  # já vem normalizado
         elif normalized is False:
-            normalize_flag = False
+            normalize_flag = True   # normalizar no Rust
+        elif normalized is None:
+            normalize_flag = True   # default
         else:
             raise ValueError("Invalid value for 'normalized'. Must be True, False or None.")
 
-        bin_path = Path("nseek_temp") / base_name / f"{level}.bin"
+        base_dir = Path(output_dir) if output_dir else Path.home() / ".nseek" / "indexes"
+        bin_path = base_dir / base_name / f"{level}.bin"
         bin_path.parent.mkdir(parents=True, exist_ok=True)
 
         if not bin_path.exists():
             logger.info(f"Creating binary index at {bin_path}")
             try:
                 print(f"🧪 BIN PATH: {bin_path}")
+                print(f"⏱️ Antes do py_prepare_bin {time.time() - start:.2f}s")
+
+                # ✅ Embeddings como numpy array 2D direto
                 created_path = py_prepare_bin_from_embeddings(
-                    embeddings.tolist(),
-                    d,
-                    str(bin_path),
-                    level,
-                    ann,
+                    embeddings=embeddings,  # ← não usar tolist()
+                    base_name=base_name,
+                    level=level,
+                    ann=ann,
                     normalize=normalize_flag,
-                    seed=42
+                    seed=42,
+                    output_dir=str(output_dir) if output_dir else None
                 )
-                engine = PySearchEngine(created_path,normalize_flag, ann=ann)
+
+                print(f"⏱️ Antes do pysearchengine: {time.time() - start:.2f}s")
+                engine = PySearchEngine(str(created_path), normalize_flag, ann=ann)
+
             except Exception as e:
                 logger.error(f"Binary creation failed: {e}")
                 raise RuntimeError(f"Failed to create binary for level '{level}': {e}")
         else:
-            engine = PySearchEngine(str(bin_path),normalize_flag , ann=ann)
+            engine = PySearchEngine(str(bin_path), normalize_flag, ann=ann)
 
+        print(f"⏱️ Antes do Return: {time.time() - start:.2f}s")
         return cls(engine=engine, level=level, normalized=(normalized is not False))
 
     def query(

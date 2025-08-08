@@ -1,21 +1,20 @@
-use std::collections::HashMap;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rand_distr::{Normal, Distribution};
 use rayon::prelude::*;
-use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::{BufWriter, BufReader, Write, Read};
 use std::path::Path;
-use std::sync::Mutex;
+use std::collections::HashMap;
+use smallvec::SmallVec;
+use dashmap::DashMap;
 
 #[derive(Clone)]
 pub struct AnnIndex {
     pub dims: usize,
     pub bits: usize,
     pub projections: Vec<Vec<f32>>,
-    pub buckets: HashMap<u64, Vec<usize>>,
-    pub checksum: [u8; 32],
+    pub buckets: HashMap<u16, SmallVec<[usize; 16]>>,
 }
 
 impl AnnIndex {
@@ -29,53 +28,53 @@ impl AnnIndex {
             .map(|_| (0..dims).map(|_| normal.sample(&mut rng) as f32).collect())
             .collect();
 
-        let buckets = Mutex::new(HashMap::<u64, Vec<usize>>::new());
+        let buckets = DashMap::<u16, SmallVec<[usize; 16]>>::new();
 
         (0..rows).into_par_iter().for_each(|i| {
-            let offset = i * dims;
-            let vec_i = &vectors[offset..offset + dims];
-            let mut hash = 0u64;
+            let vec_i = &vectors[i * dims..(i + 1) * dims];
+            let mut hash = 0u16;
 
-            for (j, proj) in projections.iter().enumerate() {
+            for (j, proj) in projections.iter().enumerate().take(bits.min(16)) {
                 let dot = vec_i.iter().zip(proj).map(|(a, b)| a * b).sum::<f32>();
                 if dot >= 0.0 {
                     hash |= 1 << j;
                 }
             }
 
-            let mut guard = buckets.lock().unwrap();
-            guard.entry(hash).or_default().push(i);
+            buckets.entry(hash).or_default().push(i);
         });
 
-        let checksum = Self::compute_checksum(vectors);
+        let buckets_final = buckets.into_iter().collect::<HashMap<_, _>>();
 
         Self {
             dims,
             bits,
             projections,
-            buckets: buckets.into_inner().unwrap(),
-            checksum,
+            buckets: buckets_final,
         }
     }
 
     pub fn query_candidates(&self, query: &[f32]) -> Vec<usize> {
         assert_eq!(query.len(), self.dims);
 
-        let mut hash = 0u64;
-        for (j, proj) in self.projections.iter().enumerate() {
+        let mut hash = 0u16;
+        for (j, proj) in self.projections.iter().enumerate().take(self.bits.min(16)) {
             let dot = query.iter().zip(proj).map(|(a, b)| a * b).sum::<f32>();
             if dot >= 0.0 {
                 hash |= 1 << j;
             }
         }
 
-        self.buckets.get(&hash).cloned().unwrap_or_default()
+        self.buckets
+            .get(&hash)
+            .map(|v| v.to_vec())
+            .unwrap_or_else(Vec::new)
     }
 
     pub fn query(&self, query: &[f32], top_k: usize, vectors: &[f32]) -> Vec<(usize, f32)> {
         let candidates = self.query_candidates(query);
 
-        let results: Vec<(usize, f32)> = candidates
+        let mut results: Vec<(usize, f32)> = candidates
             .par_iter()
             .map(|&i| {
                 let offset = i * self.dims;
@@ -85,10 +84,9 @@ impl AnnIndex {
             })
             .collect();
 
-        let mut sorted = results;
-        sorted.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        sorted.truncate(top_k);
-        sorted
+        results.par_sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
+        results.truncate(top_k);
+        results
     }
 
     pub fn save<P: AsRef<Path>>(&self, path: P) -> std::io::Result<()> {
@@ -103,11 +101,21 @@ impl AnnIndex {
             }
         }
 
-        file.write_all(&self.checksum)?;
+        let num_buckets = self.buckets.len() as u32;
+        file.write_all(&num_buckets.to_le_bytes())?;
+
+        for (&hash, ids) in &self.buckets {
+            file.write_all(&hash.to_le_bytes())?;
+            file.write_all(&(ids.len() as u32).to_le_bytes())?;
+            for &id in ids {
+                file.write_all(&(id as u32).to_le_bytes())?;
+            }
+        }
+
         Ok(())
     }
 
-    pub fn load<P: AsRef<Path>>(path: P, vectors: &[f32]) -> std::io::Result<Self> {
+    pub fn load<P: AsRef<Path>>(path: P, _vectors: &[f32]) -> std::io::Result<Self> {
         let mut file = BufReader::new(File::open(path)?);
 
         let mut u32_buf = [0u8; 4];
@@ -127,44 +135,33 @@ impl AnnIndex {
             }
         }
 
-        let mut checksum = [0u8; 32];
-        file.read_exact(&mut checksum)?;
+        file.read_exact(&mut u32_buf)?;
+        let num_buckets = u32::from_le_bytes(u32_buf);
 
-        let actual = Self::compute_checksum(vectors);
-        if checksum != actual {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Checksum mismatch"));
-        }
+        let mut buckets = HashMap::new();
 
-        let rows = vectors.len() / dims;
-        let buckets = Mutex::new(HashMap::<u64, Vec<usize>>::new());
+        for _ in 0..num_buckets {
+            let mut hash_buf = [0u8; 2];
+            file.read_exact(&mut hash_buf)?;
+            let hash = u16::from_le_bytes(hash_buf);
 
-        (0..rows).into_par_iter().for_each(|i| {
-            let offset = i * dims;
-            let vec_i = &vectors[offset..offset + dims];
+            file.read_exact(&mut u32_buf)?;
+            let len = u32::from_le_bytes(u32_buf);
 
-            let mut hash = 0u64;
-            for (j, proj) in projections.iter().enumerate() {
-                let dot = vec_i.iter().zip(proj).map(|(a, b)| a * b).sum::<f32>();
-                if dot >= 0.0 {
-                    hash |= 1 << j;
-                }
+            let mut ids = SmallVec::with_capacity(len as usize);
+            for _ in 0..len {
+                file.read_exact(&mut u32_buf)?;
+                ids.push(u32::from_le_bytes(u32_buf) as usize);
             }
 
-            let mut guard = buckets.lock().unwrap();
-            guard.entry(hash).or_default().push(i);
-        });
+            buckets.insert(hash, ids);
+        }
 
         Ok(Self {
             dims,
             bits,
             projections,
-            buckets: buckets.into_inner().unwrap(),
-            checksum,
+            buckets,
         })
-    }
-
-    fn compute_checksum(vectors: &[f32]) -> [u8; 32] {
-        let bytes = bytemuck::cast_slice(vectors);
-        Sha256::digest(bytes).into()
     }
 }
