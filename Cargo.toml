@@ -52,6 +52,7 @@ hashbrown = "0.15.5"
 smallvec = "1.15.1"
 pdqselect = "0.1.1"
 numpy = "0.20"
+half = "2.4"
 
 [profile.release]
 opt-level = "z"

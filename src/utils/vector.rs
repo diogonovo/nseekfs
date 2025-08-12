@@ -1,90 +1,128 @@
-use log::{error, info, warn};
-use std::fs::File;
-use std::io::{BufRead, BufReader};
+/// Vector utility functions for similarity calculations
 
-pub fn normalize_vector_inplace(vec: &mut [f32]) {
-    let norm = vec.iter().map(|v| v * v).sum::<f32>().sqrt();
-    if norm > 0.0 {
-        for v in vec.iter_mut() {
-            *v /= norm;
+#[derive(Debug, Clone, PartialEq)]
+pub enum SimilarityMetric {
+    Cosine,
+    Euclidean,
+    DotProduct,
+}
+
+impl SimilarityMetric {
+    pub fn from_str(s: &str) -> Result<Self, String> {
+        match s.to_lowercase().as_str() {
+            "cosine" => Ok(SimilarityMetric::Cosine),
+            "euclidean" => Ok(SimilarityMetric::Euclidean),
+            "dot_product" | "dot" => Ok(SimilarityMetric::DotProduct),
+            _ => Err(format!("Unsupported similarity metric: {}", s)),
         }
-    } else {
-        warn!("Vector has zero norm and was not normalized");
+    }
+}
+
+pub fn compute_similarity(a: &[f32], b: &[f32], metric: &SimilarityMetric) -> f32 {
+    debug_assert_eq!(a.len(), b.len(), "Vector dimensions must match");
+    
+    match metric {
+        SimilarityMetric::Cosine => cosine_similarity(a, b),
+        SimilarityMetric::Euclidean => {
+            // Return negative distance so higher values = more similar (for sorting)
+            // But make it meaningful: -distance becomes similarity score
+            let distance = euclidean_distance(a, b);
+            -distance
+        },
+        SimilarityMetric::DotProduct => dot_product(a, b),
     }
 }
 
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    debug_assert_eq!(a.len(), b.len(), "Vector dimensions must match");
+    
+    let mut dot_product = 0.0;
+    let mut norm_a = 0.0;
+    let mut norm_b = 0.0;
+    
+    for i in 0..a.len() {
+        dot_product += a[i] * b[i];
+        norm_a += a[i] * a[i];
+        norm_b += b[i] * b[i];
+    }
+    
+    let norm_product = (norm_a * norm_b).sqrt();
+    if norm_product == 0.0 {
+        0.0
+    } else {
+        dot_product / norm_product
+    }
+}
+
+pub fn euclidean_distance(a: &[f32], b: &[f32]) -> f32 {
+    debug_assert_eq!(a.len(), b.len(), "Vector dimensions must match");
+    
+    a.iter()
+        .zip(b.iter())
+        .map(|(x, y)| (x - y).powi(2))
+        .sum::<f32>()
+        .sqrt()
+}
+
+pub fn dot_product(a: &[f32], b: &[f32]) -> f32 {
+    debug_assert_eq!(a.len(), b.len(), "Vector dimensions must match");
+    
     a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
 }
 
-pub fn read_csv_matrix(path: &str) -> Result<Vec<Vec<f32>>, String> {
-    let file = File::open(path).map_err(|e| {
-        error!("Failed to open CSV '{}': {}", path, e);
-        format!("Failed to open CSV '{}': {}", path, e)
-    })?;
-    let reader = BufReader::new(file);
-    let mut result = Vec::new();
-
-    for (i, line_result) in reader.lines().enumerate() {
-        let line = line_result.map_err(|e| {
-            error!("Error reading line {} of CSV '{}': {}", i + 1, path, e);
-            format!("Error at line {} in CSV: {}", i + 1, e)
-        })?;
-
-        let row: Result<Vec<f32>, _> = line.split(',').map(|s| s.trim().parse::<f32>()).collect();
-
-        match row {
-            Ok(vec) => result.push(vec),
-            Err(_) => {
-                error!("Failed to parse line {} to floats: '{}'", i + 1, line);
-                return Err(format!("Failed to parse line {} to floats", i + 1));
-            }
+pub fn normalize_vector_inplace(vector: &mut [f32]) {
+    let norm = vector.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm > 1e-12 {
+        for x in vector.iter_mut() {
+            *x /= norm;
         }
-    }
-
-    if result.is_empty() {
-        error!("CSV is empty or malformed → '{}'", path);
-        return Err("CSV is empty or malformed".into());
-    }
-
-    info!(
-        "Successfully loaded CSV file with {} rows from '{}'",
-        result.len(),
-        path
-    );
-    Ok(result)
-}
-
-pub fn normalize_matrix(matrix: &mut Vec<Vec<f32>>) {
-    info!("Normalizing matrix with {} vectors", matrix.len());
-    for vec in matrix.iter_mut() {
-        normalize_vector_inplace(vec);
     }
 }
 
-pub fn validate_dimensions(matrix: &[Vec<f32>]) -> Result<usize, String> {
-    if matrix.is_empty() {
-        error!("Matrix is empty");
-        return Err("Input is empty".into());
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cosine_similarity() {
+        let a = vec![1.0, 0.0, 0.0];
+        let b = vec![1.0, 0.0, 0.0];
+        assert!((cosine_similarity(&a, &b) - 1.0).abs() < 1e-6);
+
+        let a = vec![1.0, 0.0];
+        let b = vec![0.0, 1.0];
+        assert!((cosine_similarity(&a, &b) - 0.0).abs() < 1e-6);
     }
 
-    let expected = matrix[0].len();
-    for (i, row) in matrix.iter().enumerate() {
-        if row.len() != expected {
-            error!(
-                "Inconsistent dimensions at row {}: expected {}, found {}",
-                i,
-                expected,
-                row.len()
-            );
-            return Err(format!(
-                "Inconsistent dimension at row {}: expected {}, found {}",
-                i,
-                expected,
-                row.len()
-            ));
-        }
+    #[test]
+    fn test_euclidean_distance() {
+        let a = vec![0.0, 0.0];
+        let b = vec![3.0, 4.0];
+        assert!((euclidean_distance(&a, &b) - 5.0).abs() < 1e-6);
     }
 
-    Ok(expected)
+    #[test]
+    fn test_dot_product() {
+        let a = vec![1.0, 2.0, 3.0];
+        let b = vec![4.0, 5.0, 6.0];
+        assert!((dot_product(&a, &b) - 32.0).abs() < 1e-6); // 1*4 + 2*5 + 3*6 = 32
+    }
+
+    #[test]
+    fn test_similarity_metric_from_str() {
+        assert_eq!(SimilarityMetric::from_str("cosine").unwrap(), SimilarityMetric::Cosine);
+        assert_eq!(SimilarityMetric::from_str("euclidean").unwrap(), SimilarityMetric::Euclidean);
+        assert_eq!(SimilarityMetric::from_str("dot_product").unwrap(), SimilarityMetric::DotProduct);
+        assert_eq!(SimilarityMetric::from_str("dot").unwrap(), SimilarityMetric::DotProduct);
+        
+        assert!(SimilarityMetric::from_str("invalid").is_err());
+    }
+
+    #[test]
+    fn test_normalize_vector() {
+        let mut vec = vec![3.0, 4.0];
+        normalize_vector_inplace(&mut vec);
+        let norm = vec.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!((norm - 1.0).abs() < 1e-6);
+    }
 }

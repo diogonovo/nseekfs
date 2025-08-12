@@ -104,9 +104,32 @@ fn chunked_len(len: usize) -> usize {
 
 fn quantize_in_place(data: &mut [f32], level: &str) -> Result<(), String> {
     match level {
-        "f16" => Ok(()),
-        "f8" => Ok(()),
-        "f64" => Ok(()),
+        "f32" => Ok(()), // No quantization needed
+        "f16" => {
+            // Quantize to f16 range and precision
+            for val in data.iter_mut() {
+                // Convert to f16 and back to simulate f16 precision loss
+                let f16_val = half::f16::from_f32(*val);
+                *val = f16_val.to_f32();
+            }
+            Ok(())
+        },
+        "f8" => {
+            // Improved f8 quantization: map to [-2, 2] range with 256 levels
+            // This preserves more information than [-1, 1]
+            for val in data.iter_mut() {
+                // Clamp to reasonable range and quantize to 8-bit precision
+                let clamped = val.clamp(-2.0, 2.0);
+                let quantized = (clamped * 127.0 / 2.0).round() * 2.0 / 127.0;
+                *val = quantized;
+            }
+            Ok(())
+        },
+        "f64" => {
+            // For f64, we keep f32 precision (no actual f64 storage yet)
+            // This maintains full f32 precision as a "high quality" mode
+            Ok(())
+        },
         _ => Err("Unsupported quantization level".into()),
     }
 }
@@ -209,7 +232,7 @@ pub fn resolve_bin_path(
     };
 
     if let Some(parent) = final_path.parent() {
-        if let Err(e) = create_dir_all(parent) {
+        if let Err(_e) = create_dir_all(parent) {
             let fallback = std::env::temp_dir().join("nseek_fallback").join(base_name);
             create_dir_all(&fallback)
                 .map_err(|e| format!("❌ Falhou criação do fallback: {}", e))?;

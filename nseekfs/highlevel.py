@@ -3,9 +3,12 @@ from typing import List, Union, Optional
 import logging
 from pathlib import Path
 import time
+from .validation import (
+    validate_embeddings, validate_query_vector, validate_level, 
+    validate_top_k, validate_method, validate_similarity
+)
 
 logger = logging.getLogger(__name__)
-start = time.time()
 
 class NSeek:
     """
@@ -26,48 +29,52 @@ class NSeek:
         ann: bool = True,
         base_name: str = "default",
         output_dir: Optional[Union[str, Path]] = None,
+        seed: int = 42,
     ) -> str:
         """
-        Cria um índice binário a partir de embeddings e retorna o caminho do ficheiro criado.
+        Create a binary index from embeddings and return the created file path.
         
+        Args:
+            embeddings: Input embeddings (array, list, or file path)
+            level: Precision level ("f8", "f16", "f32", "f64")
+            normalized: Whether embeddings are normalized (None=auto-normalize)
+            ann: Enable approximate nearest neighbors
+            base_name: Base name for index files
+            output_dir: Output directory path
+            seed: Random seed for ANN index
+            
         Returns:
-            str: Caminho para o ficheiro .bin criado
+            str: Path to the created .bin file
+            
+        Raises:
+            ValueError: Invalid input parameters
+            RuntimeError: Index creation failed
         """
         from .nseekfs import py_prepare_bin_from_embeddings
 
-        if isinstance(embeddings, str):
-            if embeddings.endswith(".npy"):
-                embeddings = np.load(embeddings)
-            elif embeddings.endswith(".csv"):
-                embeddings = np.loadtxt(embeddings, delimiter=",")
-            else:
-                raise ValueError("Unsupported file format. Only .npy and .csv are supported.")
-
-        embeddings = np.asarray(embeddings, dtype=np.float32)
-
-        if embeddings.ndim != 2:
-            raise ValueError("Embeddings must be a 2D array (n_samples, dim).")
+        # Validate inputs
+        embeddings = validate_embeddings(embeddings)
+        level = validate_level(level)
+        
+        if not isinstance(ann, bool):
+            raise TypeError("ann must be a boolean")
+        
+        if not isinstance(seed, int) or seed < 0:
+            raise ValueError("seed must be a non-negative integer")
 
         n, d = embeddings.shape
-        if n < 1:
-            raise ValueError("At least one embedding is required.")
-        if d < 8 or d > 4096:
-            raise ValueError("Embedding dimension must be between 8 and 4096.")
-        if level not in {"f8", "f16", "f32", "f64"}:
-            raise ValueError("Invalid level. Must be one of: 'f8', 'f16', 'f32', 'f64'.")
+        logger.info(f"Creating index: {n} vectors, {d} dimensions, level={level}, ann={ann}")
 
-        # Lógica de normalização
+        # Normalization logic
         if normalized is True:
-            normalize_flag = False  # já vem normalizado
+            normalize_flag = False  # Already normalized
         elif normalized is False:
-            normalize_flag = True   # normalizar no Rust
+            normalize_flag = True   # Normalize in Rust
         elif normalized is None:
-            normalize_flag = True   # default
+            normalize_flag = True   # Default normalize
         else:
-            raise ValueError("Invalid value for 'normalized'. Must be True, False or None.")
+            raise ValueError("normalized must be True, False, or None")
 
-        logger.info(f"Creating binary index with level={level}, ann={ann}, normalize={normalize_flag}")
-        
         try:
             created_path = py_prepare_bin_from_embeddings(
                 embeddings=embeddings,
@@ -75,15 +82,16 @@ class NSeek:
                 level=level,
                 ann=ann,
                 normalize=normalize_flag,
-                seed=42,
+                seed=seed,
                 output_dir=str(output_dir) if output_dir else None
             )
+            
             logger.info(f"Index created successfully at: {created_path}")
             return created_path
 
         except Exception as e:
-            logger.error(f"Binary creation failed: {e}")
-            raise RuntimeError(f"Failed to create binary for level '{level}': {e}")
+            logger.error(f"Index creation failed: {e}")
+            raise RuntimeError(f"Failed to create index for level '{level}': {e}")
 
     @classmethod
     def load_index(
@@ -94,13 +102,20 @@ class NSeek:
         level: Optional[str] = None
     ) -> "NSeek":
         """
-        Carrega um índice existente a partir de um ficheiro .bin
+        Load an existing index from a .bin file
         
         Args:
-            bin_path: Caminho para o ficheiro .bin
-            normalized: Se os vetores estão normalizados
-            ann: Se deve usar ANN (se disponível)
-            level: Nível de precisão (inferido do nome do ficheiro se não especificado)
+            bin_path: Path to the .bin file
+            normalized: Whether vectors are normalized
+            ann: Enable ANN if available
+            level: Precision level (inferred from filename if not specified)
+            
+        Returns:
+            NSeek: Loaded index instance
+            
+        Raises:
+            FileNotFoundError: Binary file not found
+            RuntimeError: Failed to load index
         """
         from .nseekfs import PySearchEngine
 
@@ -108,22 +123,22 @@ class NSeek:
         if not bin_path.exists():
             raise FileNotFoundError(f"Binary file not found: {bin_path}")
 
-        # Inferir o level do nome do ficheiro se não especificado
+        # Infer level from filename if not specified
         if level is None:
             level = bin_path.stem  # f32.bin -> f32
+        
+        level = validate_level(level)
 
-        # Lógica de normalização para o engine
-        if normalized is True:
-            normalize_flag = False  # já vem normalizado
-        elif normalized is False:
-            normalize_flag = True   # normalizar no Rust
-        else:
-            raise ValueError("Invalid value for 'normalized'. Must be True or False.")
+        if not isinstance(normalized, bool):
+            raise TypeError("normalized must be a boolean")
+        
+        if not isinstance(ann, bool):
+            raise TypeError("ann must be a boolean")
 
         try:
             logger.info(f"Loading index from: {bin_path}")
-            engine = PySearchEngine(str(bin_path), normalize_flag, ann=ann)
-            logger.info(f"Index loaded successfully: dims={engine.dims()}, rows={engine.rows()}")
+            engine = PySearchEngine(str(bin_path), ann=ann)
+            logger.info(f"Index loaded: dims={engine.dims()}, rows={engine.rows()}")
             
             return cls(engine=engine, level=level, normalized=normalized)
 
@@ -140,24 +155,37 @@ class NSeek:
         ann: bool = True,
         base_name: str = "default",
         output_dir: Optional[Union[str, Path]] = None,
+        force_rebuild: bool = False,
     ) -> "NSeek":
         """
-        Método de conveniência que cria e carrega um índice em um só passo.
-        Se o índice já existir, carrega-o. Caso contrário, cria um novo.
+        Convenience method that creates and loads an index in one step.
+        If index exists and force_rebuild=False, loads it. Otherwise creates new.
+        
+        Args:
+            embeddings: Input embeddings
+            level: Precision level
+            normalized: Normalization setting
+            ann: Enable ANN
+            base_name: Base name for files
+            output_dir: Output directory
+            force_rebuild: Force rebuild even if index exists
+            
+        Returns:
+            NSeek: Ready-to-use index
         """
-        # Determinar o caminho do arquivo bin
+        # Determine bin file path
         if output_dir:
             bin_path = Path(output_dir) / f"{level}.bin"
         else:
             base_dir = Path.home() / ".nseek" / "indexes" / base_name
             bin_path = base_dir / f"{level}.bin"
 
-        # Se o arquivo já existe, carregar
-        if bin_path.exists():
+        # Load existing if available and not forcing rebuild
+        if bin_path.exists() and not force_rebuild:
             logger.info(f"Loading existing index from {bin_path}")
             return cls.load_index(bin_path, normalized=(normalized is not False), ann=ann, level=level)
         
-        # Caso contrário, criar novo índice
+        # Create new index
         logger.info(f"Creating new index at {bin_path}")
         created_path = cls.create_index(
             embeddings=embeddings,
@@ -168,47 +196,81 @@ class NSeek:
             output_dir=output_dir
         )
         
-        # Carregar o índice recém-criado
+        # Load the newly created index
         return cls.load_index(created_path, normalized=(normalized is not False), ann=ann, level=level)
 
     def query(
         self,
         query_vector: Union[np.ndarray, List[float]],
         top_k: int = 5,
-        method: str = "simd",
+        method: str = "auto",
         similarity: str = "cosine"
     ) -> List[dict]:
         """
-        Executa uma query no índice carregado.
+        Execute a query on the loaded index.
+        
+        Args:
+            query_vector: Query vector
+            top_k: Number of results to return
+            method: Search method ("simd", "scalar", "auto")
+            similarity: Similarity metric ("cosine", "euclidean", "dot_product")
+            
+        Returns:
+            List[dict]: Results with 'idx' and 'score' keys
+            
+        Raises:
+            ValueError: Invalid parameters
+            RuntimeError: Search failed
         """
-        if not isinstance(query_vector, (list, np.ndarray)):
-            raise TypeError("Query vector must be a list or numpy array.")
+        # Validate inputs
+        query_vector = validate_query_vector(query_vector, self.dims)
+        top_k = validate_top_k(top_k, self.rows)
+        method = validate_method(method)
+        similarity = validate_similarity(similarity)
 
-        query_vector = np.asarray(query_vector, dtype=np.float32)
-        if query_vector.ndim != 1:
-            raise ValueError("Query vector must be one-dimensional.")
-
-        if similarity == "cosine":
-            if not self.normalized:
-                norm = np.linalg.norm(query_vector)
-                if norm == 0:
-                    raise ValueError("Query vector cannot be zero.")
-                query_vector /= norm
-        else:
-            raise ValueError(f"Similarity '{similarity}' not supported. Only 'cosine' is available for now.")
+        # Normalize query if needed for cosine similarity
+        if similarity == "cosine" and not self.normalized:
+            norm = np.linalg.norm(query_vector)
+            if norm > 0:
+                query_vector = query_vector / norm
 
         try:
-            results = self.engine.top_k_query(query_vector.tolist(), top_k, method=method, similarity=similarity)
+            results = self.engine.top_k_query(
+                query_vector.tolist(), 
+                top_k, 
+                method=method, 
+                similarity=similarity
+            )
+            
+            return [{"idx": int(idx), "score": float(score)} for idx, score in results]
+            
         except Exception as e:
             logger.error(f"Search failed: {e}")
             raise RuntimeError(f"Search failed at level {self.level}: {e}")
 
-        return [{"idx": int(idx), "score": float(score)} for idx, score in results]
-
     def get_vector(self, idx: int) -> np.ndarray:
         """
-        Retorna o vetor no índice especificado.
+        Return the vector at the specified index.
+        
+        Args:
+            idx: Vector index
+            
+        Returns:
+            np.ndarray: Vector at the index
+            
+        Raises:
+            ValueError: Invalid index
+            RuntimeError: Failed to retrieve vector
         """
+        if not isinstance(idx, int):
+            raise TypeError("Index must be an integer")
+        
+        if idx < 0:
+            raise ValueError("Index must be non-negative")
+        
+        if idx >= self.rows:
+            raise ValueError(f"Index {idx} out of bounds (max: {self.rows - 1})")
+
         try:
             vector = self.engine.get_vector(idx)
             return np.array(vector, dtype=np.float32)
@@ -217,13 +279,17 @@ class NSeek:
 
     @property
     def dims(self) -> int:
-        """Número de dimensões dos vetores."""
+        """Number of vector dimensions."""
         return self.engine.dims()
 
     @property
     def rows(self) -> int:
-        """Número de vetores no índice."""
+        """Number of vectors in the index."""
         return self.engine.rows()
 
     def __repr__(self) -> str:
         return f"NSeek(level='{self.level}', dims={self.dims}, rows={self.rows}, normalized={self.normalized})"
+    
+    def __len__(self) -> int:
+        """Return number of vectors in index."""
+        return self.rows

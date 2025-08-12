@@ -4,7 +4,7 @@ use std::sync::Arc;
 use memmap2::{Mmap, MmapMut};
 use rayon::prelude::*;
 use crate::ann_opt::AnnIndex;
-use crate::utils::vector::{cosine_similarity, normalize_vector_inplace};
+use crate::utils::vector::{compute_similarity, SimilarityMetric};
 use log::{debug, error, info, warn};
 
 #[derive(Clone)]
@@ -145,38 +145,131 @@ impl Engine {
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
     }
 
-    //pub fn top_k_query(&self, query: &[f32], k: usize) -> Result<Vec<(usize, f32)>, String> {
-    //    if query.len() != self.dims {
-    //        return Err(format!(
-    //            "Query vector dimension mismatch: expected {}, got {}",
-    //            self.dims,
-    //            query.len()
-    //        ));
-    //    }
-//
-    //    let candidates: Vec<usize> = if self.ann {
-    //        match &self.ann_index {
-    //            Some(ann) => ann.query_candidates(query),
-    //            None => return Err("ANN enabled but index is None".into()),
-    //        }
-    //    } else {
-    //        (0..self.rows).collect()
-    //    };
-//
-    //    let results: Vec<(usize, f32)> = candidates
-    //        .par_iter()
-    //        .filter_map(|&i| {
-    //            let vec_i = &self.vectors[i * self.dims..(i + 1) * self.dims];
-    //            let score = cosine_similarity(query, vec_i);
-    //            Some((i, score))
-    //        })
-    //        .collect();
-//
-    //    let mut sorted = results;
-    //    sorted.par_sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
-    //    sorted.truncate(k);
-    //    Ok(sorted)
-    //}
+    // Main query methods with similarity metric support
+    pub fn top_k_query(&self, query: &[f32], k: usize) -> Result<Vec<(usize, f32)>, String> {
+        self.top_k_query_with_similarity(query, k, &SimilarityMetric::Cosine)
+    }
+
+    pub fn top_k_query_with_similarity(&self, query: &[f32], k: usize, similarity: &SimilarityMetric) -> Result<Vec<(usize, f32)>, String> {
+        if query.len() != self.dims {
+            return Err(format!(
+                "Query vector dimension mismatch: expected {}, got {}",
+                self.dims,
+                query.len()
+            ));
+        }
+
+        // Use auto-selection logic 
+        if self.dims >= 64 && self.rows >= 1000 && matches!(similarity, SimilarityMetric::Cosine | SimilarityMetric::DotProduct) {
+            self.top_k_query_simd_impl_with_similarity(query, k, similarity)
+        } else {
+            self.top_k_query_scalar_with_similarity(query, k, similarity)
+        }
+    }
+
+    // Scalar implementation
+    pub fn top_k_query_scalar(&self, query: &[f32], k: usize) -> Result<Vec<(usize, f32)>, String> {
+        self.top_k_query_scalar_with_similarity(query, k, &SimilarityMetric::Cosine)
+    }
+
+    pub fn top_k_query_scalar_with_similarity(&self, query: &[f32], k: usize, similarity: &SimilarityMetric) -> Result<Vec<(usize, f32)>, String> {
+        if query.len() != self.dims {
+            return Err(format!(
+                "Query vector has wrong dimension: expected {}, got {}",
+                self.dims,
+                query.len()
+            ));
+        }
+
+        let candidates: Vec<usize> = if self.ann {
+            match &self.ann_index {
+                Some(index) => index.query_candidates(query),
+                None => (0..self.rows).collect(),
+            }
+        } else {
+            (0..self.rows).collect()
+        };
+
+        let mut results: Vec<(usize, f32)> = candidates
+            .into_par_iter()
+            .map(|i| {
+                let offset = i * self.dims;
+                let vec_i = &self.vectors[offset..offset + self.dims];
+                let score = compute_similarity(query, vec_i, similarity);
+                (i, score)
+            })
+            .collect();
+
+        if results.len() > k {
+            results.select_nth_unstable_by(k, |a, b| b.1.total_cmp(&a.1));
+            results.truncate(k);
+        }
+
+        results.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
+        Ok(results)
+    }
+
+    // SIMD implementation
+    pub fn top_k_query_simd(&self, query: &[f32], k: usize) -> Result<Vec<(usize, f32)>, String> {
+        self.top_k_query_simd_with_similarity(query, k, &SimilarityMetric::Cosine)
+    }
+
+    pub fn top_k_query_simd_with_similarity(&self, query: &[f32], k: usize, similarity: &SimilarityMetric) -> Result<Vec<(usize, f32)>, String> {
+        if query.len() != self.dims {
+            return Err(format!(
+                "Query vector has wrong dimension: expected {}, got {}",
+                self.dims,
+                query.len()
+            ));
+        }
+        
+        self.top_k_query_simd_impl_with_similarity(query, k, similarity)
+    }
+
+    // Internal SIMD implementation
+    fn top_k_query_simd_impl_with_similarity(&self, query: &[f32], k: usize, similarity: &SimilarityMetric) -> Result<Vec<(usize, f32)>, String> {
+        let candidates: Vec<usize> = if self.ann {
+            match &self.ann_index {
+                Some(index) => index.query_candidates(query),
+                None => (0..self.rows).collect(),
+            }
+        } else {
+            (0..self.rows).collect()
+        };
+
+        let mut results: Vec<(usize, f32)> = candidates
+            .into_par_iter()
+            .map(|i| {
+                let offset = i * self.dims;
+                let vec_i = &self.vectors[offset..offset + self.dims];
+                
+                let score = match similarity {
+                    SimilarityMetric::DotProduct => {
+                        // Use SIMD for dot product
+                        crate::query::compute_score_simd(query, vec_i)
+                    },
+                    SimilarityMetric::Cosine => {
+                        // Use proper cosine similarity calculation
+                        compute_similarity(query, vec_i, similarity)
+                    },
+                    SimilarityMetric::Euclidean => {
+                        // Fall back to scalar for euclidean
+                        compute_similarity(query, vec_i, similarity)
+                    }
+                };
+                
+                (i, score)
+            })
+            .collect();
+
+        if results.len() > k {
+            results.select_nth_unstable_by(k, |a, b| b.1.total_cmp(&a.1));
+            results.truncate(k);
+        }
+
+        results.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
+        Ok(results)
+    }
 
     pub fn top_k_subset(
         &self,
@@ -201,13 +294,11 @@ impl Engine {
             subset.len()
         );
 
-        let mut query = query.to_vec();
-
         let mut results: Vec<(usize, f32)> = subset
             .par_iter()
             .filter_map(|&i| match self.get_vector(i) {
                 Some(vec_i) => {
-                    let score = cosine_similarity(&query, vec_i);
+                    let score = compute_similarity(query, vec_i, &SimilarityMetric::Cosine);
                     Some((i, score))
                 }
                 None => {

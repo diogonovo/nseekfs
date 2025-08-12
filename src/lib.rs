@@ -9,10 +9,9 @@ mod engine;
 
 use prebin::prepare_bin_from_embeddings;
 use engine::Engine;
-use log::info;
 use std::path::Path;
-use pyo3::types::PyString;
 use numpy::PyReadonlyArray2;
+use crate::utils::vector::SimilarityMetric;
 
 #[pyfunction]
 pub fn py_prepare_bin_from_embeddings(
@@ -60,7 +59,7 @@ struct PySearchEngine {
 #[pymethods]
 impl PySearchEngine {
     #[new]
-    fn new(path: &str, normalize: Option<bool>, ann: Option<bool>) -> PyResult<Self> {
+    fn new(path: &str, ann: Option<bool>) -> PyResult<Self> {
         let ann = ann.unwrap_or(true);
 
         let engine = Engine::from_bin(path, ann)
@@ -91,7 +90,8 @@ impl PySearchEngine {
         method: Option<String>,
         similarity: Option<String>,  
     ) -> PyResult<Vec<(usize, f32)>> {
-        let method = method.unwrap_or_else(|| "simd".to_string());
+        let method = method.unwrap_or_else(|| "auto".to_string());
+        let similarity = similarity.unwrap_or_else(|| "cosine".to_string());
 
         if query.len() != self.engine.dims() {
             return Err(PyValueError::new_err(
@@ -99,10 +99,14 @@ impl PySearchEngine {
             ));
         }
 
+        // Parse similarity metric
+        let similarity_metric = SimilarityMetric::from_str(&similarity)
+            .map_err(|e| PyValueError::new_err(e))?;
+
         let result = match method.as_str() {
-            "scalar" => self.engine.top_k_query_scalar(&query, k),
-            "simd" => self.engine.top_k_query_simd(&query, k),
-            "auto" => self.engine.top_k_query(&query, k),
+            "scalar" => self.engine.top_k_query_scalar_with_similarity(&query, k, &similarity_metric),
+            "simd" => self.engine.top_k_query_simd_with_similarity(&query, k, &similarity_metric),
+            "auto" => self.engine.top_k_query_with_similarity(&query, k, &similarity_metric),
             other => {
                 return Err(PyValueError::new_err(format!(
                     "Invalid method: '{}'. Use 'simd', 'scalar', or 'auto'.",
@@ -119,18 +123,24 @@ impl PySearchEngine {
         idx: usize,
         k: usize,
         method: Option<String>,
+        similarity: Option<String>,
     ) -> PyResult<Vec<(usize, f32)>> {
-        let method = method.unwrap_or_else(|| "simd".to_string());
+        let method = method.unwrap_or_else(|| "auto".to_string());
+        let similarity = similarity.unwrap_or_else(|| "cosine".to_string());
 
         let query = self
             .engine
             .get_vector(idx)
             .ok_or_else(|| PyValueError::new_err("Invalid index"))?;
 
+        // Parse similarity metric
+        let similarity_metric = SimilarityMetric::from_str(&similarity)
+            .map_err(|e| PyValueError::new_err(e))?;
+
         let result = match method.as_str() {
-            "scalar" => self.engine.top_k_query_scalar(query, k),
-            "simd" => self.engine.top_k_query_simd(query, k),
-            "auto" => self.engine.top_k_query(query, k),
+            "scalar" => self.engine.top_k_query_scalar_with_similarity(query, k, &similarity_metric),
+            "simd" => self.engine.top_k_query_simd_with_similarity(query, k, &similarity_metric),
+            "auto" => self.engine.top_k_query_with_similarity(query, k, &similarity_metric),
             other => {
                 return Err(PyValueError::new_err(format!(
                     "Invalid method: '{}'. Use 'simd', 'scalar', or 'auto'.",
