@@ -198,20 +198,24 @@ pub fn resolve_bin_path(
     base_name: &str,
     level: &str,
 ) -> Result<PathBuf, String> {
-    let base: PathBuf = match output_dir {
-        Some(dir) => dir.join(base_name),
+    let final_path: PathBuf = match output_dir {
+        Some(dir) => {
+            dir.join(format!("{}.bin", level))
+        }
         None => {
             let home = dirs::home_dir().ok_or("❌ Não foi possível obter a home directory")?;
-            home.join(".nseek").join("indexes").join(base_name)
+            home.join(".nseek").join("indexes").join(base_name).join(format!("{}.bin", level))
         }
     };
 
-    if let Err(_) = create_dir_all(&base) {
-        let fallback = std::env::temp_dir().join("nseek_fallback").join(base_name);
-        create_dir_all(&fallback)
-            .map_err(|e| format!("❌ Falhou criação do fallback: {}", e))?;
-        return Ok(fallback.join(format!("{}.bin", level)));
+    if let Some(parent) = final_path.parent() {
+        if let Err(e) = create_dir_all(parent) {
+            let fallback = std::env::temp_dir().join("nseek_fallback").join(base_name);
+            create_dir_all(&fallback)
+                .map_err(|e| format!("❌ Falhou criação do fallback: {}", e))?;
+            return Ok(fallback.join(format!("{}.bin", level)));
+        }
     }
 
-    Ok(base.join(format!("{}.bin", level)))
+    Ok(final_path)
 }
