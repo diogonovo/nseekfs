@@ -1,14 +1,12 @@
 📋 LISTA DE TAREFAS RESTANTES PARA RELEASE PyPI v0.1.0
-✅ CONCLUÍDO:
 
  Tarefa #1: API Interface corrigida
  Tarefa #2: Bugs Rust corrigidos
  Tarefa #3: LICENSE criado
  Tarefa #4: Package nseekfs/ organizado
  Tarefa #5: Testes básicos criados
- Tarefa #6: Build local testado ✅
-
-🚀 FALTA FAZER:
+ Tarefa #6: Build local testado 
+✅
 📚 DOCUMENTAÇÃO (Crítico)
 
  Tarefa #7: Criar examples/basic_usage.py funcional
