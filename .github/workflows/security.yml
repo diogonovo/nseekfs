@@ -1,0 +1,79 @@
+name: Security Scan
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # Run security scan daily at 2 AM UTC
+    - cron: '0 2 * * *'
+
+jobs:
+  # ==================== RUST SECURITY AUDIT ====================
+  rust-security:
+    name: 🔒 Rust Security Audit
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+        
+      - name: Run Rust security audit
+        run: cargo audit
+        
+      - name: Check for vulnerable dependencies
+        run: cargo audit --db /tmp/advisory-db --json
+        continue-on-error: true
+
+  # ==================== PYTHON SECURITY SCAN ====================
+  python-security:
+    name: 🐍 Python Security Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          
+      - name: Install security tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install safety bandit semgrep
+          
+      - name: Run Safety (dependency vulnerabilities)
+        run: safety check --json --output safety-report.json
+        continue-on-error: true
+        
+      - name: Run Bandit (security linting)
+        run: bandit -r nseekfs/ -f json -o bandit-report.json
+        continue-on-error: true
+        
+      - name: Upload security reports
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: security-reports
+          path: |
+            safety-report.json
+            bandit-report.json
+
+  # ==================== DEPENDENCY REVIEW ====================
+  dependency-review:
+    name: 📋 Dependency Review
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    
+    steps:
+      - name: Dependency Review
+        uses: actions/dependency-review-action@v3
+        with:
+          fail-on-severity: moderate

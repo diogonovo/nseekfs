@@ -1,0 +1,473 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ==================== CODE QUALITY CHECKS ====================
+  lint-and-format:
+    name: 🧹 Lint & Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          
+      - name: Install linting tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install black ruff mypy
+          
+      - name: Check Python formatting with Black
+        run: black --check --diff nseekfs/ examples/
+        
+      - name: Lint Python with Ruff
+        run: ruff check nseekfs/ examples/
+        
+      - name: Type check with MyPy
+        run: mypy nseekfs/ --ignore-missing-imports
+        
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+        
+      - name: Lint Rust with Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+  # ==================== BASIC TESTS ====================
+  test-basic:
+    name: 🧪 Basic Tests
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ['3.8', '3.9', '3.10', '3.11', '3.12']
+        
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+          
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        
+      - name: Cache Rust dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install maturin pytest numpy
+          
+      - name: Build package
+        run: maturin develop --release
+        
+      - name: Run basic import test
+        run: python -c "import nseekfs; print('✅ Import successful')"
+        
+      - name: Run basic functionality test
+        run: |
+          python -c "
+          import numpy as np
+          import nseekfs
+          
+          # Create test data
+          embeddings = np.random.randn(100, 64).astype(np.float32)
+          
+          # Create index
+          index = nseekfs.from_embeddings(embeddings)
+          
+          # Test query
+          results = index.query(embeddings[0], top_k=5)
+          assert len(results) == 5
+          assert results[0]['idx'] == 0
+          print('✅ Basic functionality working')
+          "
+
+  # ==================== COMPREHENSIVE TESTS ====================
+  test-comprehensive:
+    name: 🔬 Comprehensive Tests
+    runs-on: ubuntu-latest
+    needs: [lint-and-format]
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ubuntu-cargo-${{ hashFiles('**/Cargo.lock') }}
+          
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install maturin pytest numpy scipy matplotlib
+          
+      - name: Build package in development mode
+        run: maturin develop --release
+        
+      - name: Run comprehensive test suite
+        run: python test_func.py
+        env:
+          NSEEK_SKIP_200K: "1"  # Skip heavy tests in CI
+          NSEEK_TEST_SMALL_N: "50"
+          NSEEK_TEST_MED_N: "500"
+          NSEEK_TEST_LARGE_N: "5000"
+          
+      - name: Run examples
+        run: python examples/basic_usage.py
+
+  # ==================== BENCHMARKS ====================
+  benchmark:
+    name: ⚡ Performance Benchmarks
+    runs-on: ubuntu-latest
+    needs: [test-basic]
+    if: github.event_name != 'pull_request'
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install maturin pytest-benchmark numpy
+          
+      - name: Build optimized package
+        run: maturin develop --release
+        
+      - name: Run performance benchmarks
+        run: |
+          python -c "
+          import time
+          import numpy as np
+          import nseekfs
+          
+          # Benchmark setup
+          sizes = [1000, 5000, 10000]
+          dims = 384
+          
+          for n in sizes:
+              print(f'📊 Benchmarking {n} vectors...')
+              embeddings = np.random.randn(n, dims).astype(np.float32)
+              
+              # Build time
+              start = time.time()
+              index = nseekfs.from_embeddings(embeddings, ann=True)
+              build_time = time.time() - start
+              
+              # Query time
+              query = embeddings[0]
+              start = time.time()
+              for _ in range(10):
+                  results = index.query(query, top_k=10)
+              avg_query_time = (time.time() - start) / 10 * 1000
+              
+              print(f'  Build: {build_time:.2f}s | Query: {avg_query_time:.2f}ms')
+          "
+
+  # ==================== BUILD WHEELS ====================
+  build-wheels:
+    name: 🛞 Build Wheels
+    runs-on: ${{ matrix.os }}
+    needs: [test-basic]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-13, macos-14]  # macos-14 = M1
+        
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        
+      - name: Install cibuildwheel
+        run: python -m pip install cibuildwheel
+        
+      - name: Build wheels
+        run: python -m cibuildwheel --output-dir wheelhouse
+        env:
+          # Configure cibuildwheel
+          CIBW_BUILD: "cp38-* cp39-* cp310-* cp311-* cp312-*"
+          CIBW_SKIP: "cp36-* cp37-* pp* *-win32 *-manylinux_i686"
+          
+          # Linux
+          CIBW_BEFORE_ALL_LINUX: >
+            curl https://sh.rustup.rs -sSf | sh -s -- --default-toolchain stable -y &&
+            source ~/.cargo/env
+          CIBW_ENVIRONMENT_LINUX: PATH="$HOME/.cargo/bin:$PATH"
+          
+          # macOS
+          CIBW_BEFORE_ALL_MACOS: >
+            curl https://sh.rustup.rs -sSf | sh -s -- --default-toolchain stable -y
+          CIBW_ENVIRONMENT_MACOS: PATH="$HOME/.cargo/bin:$PATH"
+          
+          # Windows
+          CIBW_BEFORE_BUILD_WINDOWS: >
+            curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain stable -y &&
+            call %USERPROFILE%\.cargo\env.cmd
+            
+          # Test command for all platforms
+          CIBW_TEST_REQUIRES: numpy pytest
+          CIBW_TEST_COMMAND: >
+            python -c "
+            import nseekfs;
+            import numpy as np;
+            emb = np.random.randn(50, 32).astype(np.float32);
+            idx = nseekfs.from_embeddings(emb);
+            res = idx.query(emb[0], top_k=3);
+            assert len(res) == 3;
+            print('✅ Wheel test passed')
+            "
+            
+      - name: Upload wheels
+        uses: actions/upload-artifact@v3
+        with:
+          name: wheels-${{ matrix.os }}
+          path: wheelhouse/*.whl
+
+  # ==================== BUILD SOURCE DISTRIBUTION ====================
+  build-sdist:
+    name: 📦 Build Source Distribution
+    runs-on: ubuntu-latest
+    needs: [lint-and-format]
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install maturin build
+          
+      - name: Build source distribution
+        run: maturin sdist --out dist/
+        
+      - name: Verify sdist contents
+        run: |
+          tar -tzf dist/*.tar.gz | head -20
+          echo "📦 Source distribution created successfully"
+          
+      - name: Upload sdist
+        uses: actions/upload-artifact@v3
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  # ==================== COLLECT ALL DISTRIBUTIONS ====================
+  collect-dist:
+    name: 📋 Collect Distributions
+    runs-on: ubuntu-latest
+    needs: [build-wheels, build-sdist]
+    
+    steps:
+      - name: Download all wheels
+        uses: actions/download-artifact@v3
+        with:
+          pattern: wheels-*
+          path: dist-wheels/
+          merge-multiple: true
+          
+      - name: Download sdist
+        uses: actions/download-artifact@v3
+        with:
+          name: sdist
+          path: dist-wheels/
+          
+      - name: List all distributions
+        run: |
+          echo "📦 Built distributions:"
+          ls -la dist-wheels/
+          echo
+          echo "📊 Distribution summary:"
+          echo "Wheels: $(ls dist-wheels/*.whl | wc -l)"
+          echo "Source: $(ls dist-wheels/*.tar.gz | wc -l)"
+          
+      - name: Upload combined distributions
+        uses: actions/upload-artifact@v3
+        with:
+          name: python-distributions
+          path: dist-wheels/
+
+  # ==================== TEST PYPI UPLOAD (TAGS ONLY) ====================
+  test-pypi-upload:
+    name: 🧪 Test PyPI Upload
+    runs-on: ubuntu-latest
+    needs: [collect-dist, test-comprehensive]
+    if: startsWith(github.ref, 'refs/tags/v')
+    environment: test-pypi
+    
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v3
+        with:
+          name: python-distributions
+          path: dist/
+          
+      - name: Publish to Test PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.TEST_PYPI_API_TOKEN }}
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
+          verbose: true
+          
+      - name: Test installation from Test PyPI
+        run: |
+          sleep 60  # Wait for package to be available
+          python -m pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ nseekfs
+          python -c "
+          import nseekfs
+          import numpy as np
+          print('✅ Test PyPI installation successful')
+          
+          # Quick functionality test
+          emb = np.random.randn(50, 32).astype(np.float32)
+          idx = nseekfs.from_embeddings(emb)
+          res = idx.query(emb[0], top_k=3)
+          assert len(res) == 3
+          print('✅ Test PyPI package functionality verified')
+          "
+
+  # ==================== PRODUCTION PYPI UPLOAD (RELEASE TAGS) ====================
+  pypi-upload:
+    name: 🚀 PyPI Release
+    runs-on: ubuntu-latest
+    needs: [test-pypi-upload]
+    if: startsWith(github.ref, 'refs/tags/v') && github.repository == 'diogonovo/nseekfs'
+    environment: pypi
+    
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v3
+        with:
+          name: python-distributions
+          path: dist/
+          
+      - name: Verify distributions
+        run: |
+          echo "🔍 Final verification before PyPI upload:"
+          ls -la dist/
+          echo
+          echo "📊 Final count:"
+          echo "Wheels: $(ls dist/*.whl | wc -l)"
+          echo "Source: $(ls dist/*.tar.gz | wc -l)"
+          
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          verbose: true
+          
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: dist/*
+          generate_release_notes: true
+          body: |
+            ## 🎉 NSeekFS v${{ github.ref_name }} Released!
+            
+            High-performance vector similarity search engine now available on PyPI.
+            
+            ### 📦 Installation
+            ```bash
+            pip install nseekfs
+            ```
+            
+            ### 🚀 Quick Start
+            ```python
+            import nseekfs
+            import numpy as np
+            
+            embeddings = np.random.randn(1000, 384).astype(np.float32)
+            index = nseekfs.from_embeddings(embeddings)
+            results = index.query(embeddings[0], top_k=10)
+            ```
+            
+            ### 📋 Changelog
+            See [CHANGELOG.md](https://github.com/diogonovo/nseekfs/blob/main/CHANGELOG.md) for detailed changes.
+            
+            ### 🔧 Built Distributions
+            - ✅ Python 3.8-3.12 support
+            - ✅ Linux (x86_64)
+            - ✅ macOS (Intel + Apple Silicon)
+            - ✅ Windows (x86_64)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ==================== NOTIFICATION ====================
+  notify-success:
+    name: 📢 Success Notification
+    runs-on: ubuntu-latest
+    needs: [pypi-upload]
+    if: always() && needs.pypi-upload.result == 'success'
+    
+    steps:
+      - name: Success notification
+        run: |
+          echo "🎉 SUCCESS: NSeekFS ${{ github.ref_name }} released to PyPI!"
+          echo "📦 Package: https://pypi.org/project/nseekfs/"
+          echo "🔗 Repository: https://github.com/diogonovo/nseekfs"

@@ -5,57 +5,277 @@ build-backend = "maturin"
 [project]
 name = "nseekfs"
 version = "0.1.0"
-description = "Fast top-k vector similarity search"
-authors = [{ name = "Diogo Novo" }]
+description = "Production-ready vector similarity search with SIMD-optimized Rust backend and experimental ANN capabilities"
+authors = [
+    { name = "Diogo Novo", email = "diogonovo@outlook.pt" }
+]
 readme = "README.md"
-requires-python = ">=3.8"
 license = { file = "LICENSE" }
+requires-python = ">=3.8"
 keywords = [
-    "vector search",
-    "semantic search",
-    "cosine similarity",
-    "approximate nearest neighbors",
-    "csv",
-    "npy",
-    "top-k",
+    "vector-search",
+    "exact-search",
+    "simd-optimization", 
+    "similarity-search",
+    "machine-learning",
+    "rust-backend",
+    "embeddings",
+    "production-ready",
+    "memory-efficient",
     "high-performance",
-    "rust",
-    "pyo3"
+    "pyo3",
+    "quantization",
+    "ann",
+    "approximate-nearest-neighbors",
+    "lsh"
 ]
 classifiers = [
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Rust",
-    "License :: OSI Approved :: MIT License",
-    "Operating System :: OS Independent",
+    # Development Status
+    "Development Status :: 4 - Beta",
+    
+    # Intended Audience
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Information Technology",
+    
+    # Topic Classification
     "Topic :: Scientific/Engineering",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
-    "Intended Audience :: Science/Research",
-    "Development Status :: 4 - Beta"
+    "Topic :: Scientific/Engineering :: Information Analysis", 
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Database :: Database Engines/Servers",
+    "Topic :: Text Processing :: Indexing",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    
+    # License
+    "License :: OSI Approved :: MIT License",
+    
+    # Programming Languages
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9", 
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    
+    # Operating Systems
+    "Operating System :: OS Independent",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: MacOS",
+    
+    # Environment
+    "Environment :: Console",
+    "Environment :: No Input/Output (Daemon)",
+    
+    # Natural Language
+    "Natural Language :: English",
+    
+    # Typing
+    "Typing :: Typed"
 ]
 dependencies = [
-    "numpy>=1.21"
+    "numpy>=1.21.0,<2.0.0",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-benchmark>=4.0.0",
+    "maturin>=1.2.0",
+    "black>=22.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0.0",
+    "build>=0.10.0"
+]
+test = [
+    "pytest>=7.0.0",
+    "pytest-benchmark>=4.0.0",
+    "scipy>=1.8.0"
+]
+examples = [
+    "matplotlib>=3.5.0",
+    "pandas>=1.4.0",
+    "jupyter>=1.0.0",
+    "sentence-transformers>=2.0.0"
+]
+docs = [
+    "sphinx>=5.0.0",
+    "sphinx-rtd-theme>=1.0.0",
+    "myst-parser>=0.18.0"
+]
+
+[project.urls]
+Homepage = "https://github.com/diogonovo/nseekfs"
+Repository = "https://github.com/diogonovo/nseekfs.git"
+Documentation = "https://github.com/diogonovo/nseekfs#readme"
+"Bug Tracker" = "https://github.com/diogonovo/nseekfs/issues"
+"Release Notes" = "https://github.com/diogonovo/nseekfs/blob/main/CHANGELOG.md"
+"Source Code" = "https://github.com/diogonovo/nseekfs"
+"Benchmarks" = "https://github.com/diogonovo/nseekfs/tree/main/examples"
+
 [tool.maturin]
-bindings = "pyo3"
-module-name = "nseekfs"
+# Maturin-specific configuration for Rust-Python builds
 python-source = "."
-packages = ["nseekfs"]
+module-name = "nseekfs.nseekfs"
+bindings = "pyo3"
+compatibility = "linux"
+
+# Build configuration
 strip = true
+sdist-include = [
+    "nseekfs/**/*.py",
+    "examples/*.py", 
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "pyproject.toml"
+]
 exclude = [
-    "src/**",
+    # Rust source code (keep proprietary)
+    "src/**/*",
+    "Cargo.toml",
     "Cargo.lock",
     "*.rs",
-    "*.toml",
-    "*.csv",
-    "*.npy",
-    "*.bin",
+    
+    # Development files
+    ".git/**",
+    ".github/**",
+    ".gitignore",
+    "target/**",
+    ".env*",
     "*.log",
-    "nseekfs/tests/**",
-    ".env",
+    
+    # Test data and artifacts
+    "test_data/**",
+    "*.csv",
+    "*.npy", 
+    "*.bin",
+    "*.ann",
+    "*.tmp",
+    
+    # Python artifacts
+    "__pycache__/**",
+    "*.pyc",
+    "*.pyo",
+    "*.pyd",
+    ".pytest_cache/**",
+    ".mypy_cache/**",
+    "dist/**",
+    "build/**",
+    "*.egg-info/**",
+    
+    # IDEs
+    ".vscode/**",
+    ".idea/**",
+    "*.swp",
+    "*.swo",
+    
+    # OS files
+    ".DS_Store",
+    "Thumbs.db"
 ]
-include = ["nseekfs/**/*.py"]
+
+# Platform-specific builds with optimizations
+[tool.maturin.target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-cpu=native", "-C", "opt-level=3"]
+
+[tool.maturin.target.x86_64-pc-windows-msvc] 
+rustflags = ["-C", "target-cpu=native", "-C", "opt-level=3"]
+
+[tool.maturin.target.x86_64-apple-darwin]
+rustflags = ["-C", "target-cpu=native", "-C", "opt-level=3"]
+
+[tool.maturin.target.aarch64-apple-darwin]
+rustflags = ["-C", "target-cpu=native", "-C", "opt-level=3"]
+
+# Python tooling configuration
+[tool.black]
+line-length = 100
+target-version = ['py38', 'py39', 'py310', 'py311', 'py312']
+include = '\.pyi?
+extend-exclude = '''
+/(
+    \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | _build
+  | buck-out
+  | build
+  | dist
+  | target
+)/
+'''
+
+[tool.ruff]
+target-version = "py38"
+line-length = 100
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+]
+ignore = [
+    "E501",  # line too long, handled by black
+    "B008",  # do not perform function calls in argument defaults
+    "C901",  # too complex
+]
+exclude = [
+    ".bzr",
+    ".direnv", 
+    ".eggs",
+    ".git",
+    ".hg",
+    ".mypy_cache",
+    ".nox",
+    ".pants.d",
+    ".ruff_cache",
+    ".svn",
+    ".tox",
+    ".venv",
+    "__pypackages__",
+    "_build",
+    "buck-out",
+    "build",
+    "dist",
+    "node_modules",
+    "venv",
+]
+
+[tool.ruff.per-file-ignores]
+"__init__.py" = ["F401"]
+"examples/*.py" = ["F401", "F841"]
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = true
+disallow_untyped_decorators = false
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+
+[[tool.mypy.overrides]]
+module = [
+    "numpy.*",
+    "scipy.*",
+    "matplotlib.*",
+    "pandas.*",
+    "sentence_transformers.*",
+]
+ignore_missing_imports = true

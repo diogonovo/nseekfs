@@ -1,0 +1,151 @@
+name: ✨ Feature Request
+description: Suggest a new feature or enhancement
+title: "[FEATURE] "
+labels: ["enhancement", "needs-triage"]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for suggesting a new feature! Please provide details below to help us understand your request.
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Pre-submission Checklist
+      description: Please verify the following before submitting
+      options:
+        - label: I have searched existing issues and this is not a duplicate request
+          required: true
+        - label: This feature would benefit the broader community, not just my specific use case
+          required: true
+        - label: I have considered whether this could be implemented as a plugin/extension
+          required: false
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Description
+      description: What problem does this feature solve? What's the current limitation?
+      placeholder: |
+        Describe the problem or limitation that this feature would address...
+        
+        For example:
+        - "Currently, it's difficult to..."
+        - "There's no way to..."
+        - "Users have to manually..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: Describe your ideal solution in detail
+      placeholder: |
+        Describe what you'd like to see implemented...
+        
+        For example:
+        - "Add a new method that..."
+        - "Extend the API to support..."
+        - "Include a parameter that..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: api-design
+    attributes:
+      label: API Design (Optional)
+      description: If you have ideas about the API design, share them here
+      placeholder: |
+        ```python
+        # Example of how the feature might be used
+        import nseekfs
+        
+        # Your proposed API usage here...
+        index = nseekfs.from_embeddings(embeddings, new_feature=True)
+        result = index.new_method(parameter="value")
+        ```
+    validations:
+      required: false
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Feature Category
+      description: What category does this feature fall into?
+      options:
+        - "Core API (search, indexing)"
+        - "Performance optimization"
+        - "New similarity metrics"
+        - "Data format support"
+        - "Visualization/debugging tools"
+        - "Documentation/examples"
+        - "Developer experience"
+        - "Integration (frameworks, databases)"
+        - "Other"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority Level
+      description: How important is this feature to you?
+      options:
+        - "Critical (blocking my project)"
+        - "High (would significantly improve my workflow)"
+        - "Medium (nice to have, would use it)"
+        - "Low (interesting idea for the future)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: What alternatives have you considered or tried?
+      placeholder: |
+        Describe alternative solutions you've considered:
+        - "I tried using X but it doesn't work because..."
+        - "Library Y has this feature but..."
+        - "Current workaround is..."
+    validations:
+      required: false
+
+  - type: textarea
+    id: use-cases
+    attributes:
+      label: Use Cases
+      description: Describe specific scenarios where this feature would be useful
+      placeholder: |
+        Provide concrete examples of how this feature would be used:
+        
+        1. Use case 1: ...
+        2. Use case 2: ...
+        3. Use case 3: ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: implementation
+    attributes:
+      label: Implementation Ideas (Optional)
+      description: If you have ideas about implementation, share them here
+      placeholder: |
+        Any thoughts on how this might be implemented:
+        - Technical approaches
+        - Potential challenges
+        - Related libraries or algorithms
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      description: Would you be interested in contributing to this feature?
+      options:
+        - label: I would be willing to submit a pull request for this feature
+        - label: I would be willing to help with testing and feedback
+        - label: I would be willing to help with documentation
