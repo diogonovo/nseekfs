@@ -1,28 +1,13 @@
-import numpy as np
-from nseekfs import NSeek
-
-# Gerar 100.000 vetores de 128 dimensões
-print("🔧 Gerar embeddings...")
-embeddings = np.random.rand(100_000, 128).astype(np.float32)
-
-# Criar o motor com ANN ativado
-print("⚙️ Criar motor...")
-engine = NSeek.from_embeddings(
-    embeddings=embeddings,
-    level="f32",
-    ann=True,
-    base_dir="nseek_test",
-    base_name="bench"
-)
-
-
-# Escolher uma query
-query = embeddings[0]
-
-# Fazer pesquisa
-print("🔍 Pesquisar top 5...")
-results = engine.query(query, top_k=5)
-
-# Mostrar resultados
-for r in results:
-    print(f"idx={r['idx']} score={r['score']:.4f}")
+import zipfile
+wheel = r'C:\Users\Diogo Novo\Documents\GitHub\nseekfs\target\wheels\nseekfs-0.1.0-cp311-cp311-win_amd64.whl'
+print('Checking wheel contents:')
+with zipfile.ZipFile(wheel, 'r') as z:
+    files = z.namelist()
+    for f in sorted(files):
+        print(f'  {f}')
+    
+    pyd_files = [f for f in files if f.endswith('.pyd')]
+    if pyd_files:
+        print(f'\n✅ SUCCESS: Rust module found: {pyd_files}')
+    else:
+        print(f'\n❌ FAIL: Still no .pyd in wheel')

@@ -5,7 +5,7 @@ build-backend = "maturin"
 [project]
 name = "nseekfs"
 version = "0.1.0"
-description = "Production-ready vector similarity search with SIMD-optimized Rust backend and experimental ANN capabilities"
+description = "High-performance vector similarity search engine with Rust backend and Python bindings"
 authors = [
     { name = "Diogo Novo", email = "diogonovo@outlook.pt" }
 ]
@@ -14,20 +14,20 @@ license = { file = "LICENSE" }
 requires-python = ">=3.8"
 keywords = [
     "vector-search",
-    "exact-search",
-    "simd-optimization", 
+    "semantic-search", 
     "similarity-search",
-    "machine-learning",
-    "rust-backend",
-    "embeddings",
-    "production-ready",
-    "memory-efficient",
-    "high-performance",
-    "pyo3",
-    "quantization",
-    "ann",
     "approximate-nearest-neighbors",
-    "lsh"
+    "ann",
+    "cosine-similarity",
+    "embeddings",
+    "machine-learning",
+    "ai",
+    "rust",
+    "pyo3",
+    "simd",
+    "high-performance",
+    "top-k",
+    "faiss-alternative"
 ]
 classifiers = [
     # Development Status
@@ -45,7 +45,6 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Database :: Database Engines/Servers",
     "Topic :: Text Processing :: Indexing",
-    "Topic :: Software Development :: Libraries :: Application Frameworks",
     
     # License
     "License :: OSI Approved :: MIT License",
@@ -114,25 +113,16 @@ Documentation = "https://github.com/diogonovo/nseekfs#readme"
 "Bug Tracker" = "https://github.com/diogonovo/nseekfs/issues"
 "Release Notes" = "https://github.com/diogonovo/nseekfs/blob/main/CHANGELOG.md"
 "Source Code" = "https://github.com/diogonovo/nseekfs"
-"Benchmarks" = "https://github.com/diogonovo/nseekfs/tree/main/examples"
 
 [tool.maturin]
 # Maturin-specific configuration for Rust-Python builds
 python-source = "."
 module-name = "nseekfs.nseekfs"
 bindings = "pyo3"
-compatibility = "linux"
 
 # Build configuration
 strip = true
-sdist-include = [
-    "nseekfs/**/*.py",
-    "examples/*.py", 
-    "README.md",
-    "LICENSE",
-    "CHANGELOG.md",
-    "pyproject.toml"
-]
+sdist-include = false
 exclude = [
     # Rust source code (keep proprietary)
     "src/**/*",
@@ -160,7 +150,6 @@ exclude = [
     "__pycache__/**",
     "*.pyc",
     "*.pyo",
-    "*.pyd",
     ".pytest_cache/**",
     ".mypy_cache/**",
     "dist/**",
@@ -178,24 +167,24 @@ exclude = [
     "Thumbs.db"
 ]
 
-# Platform-specific builds with optimizations
+# Platform-specific builds (mantido para otimizações)
 [tool.maturin.target.x86_64-unknown-linux-gnu]
-rustflags = ["-C", "target-cpu=native", "-C", "opt-level=3"]
+rustflags = ["-C", "target-cpu=native"]
 
 [tool.maturin.target.x86_64-pc-windows-msvc] 
-rustflags = ["-C", "target-cpu=native", "-C", "opt-level=3"]
+rustflags = ["-C", "target-cpu=native"]
 
 [tool.maturin.target.x86_64-apple-darwin]
-rustflags = ["-C", "target-cpu=native", "-C", "opt-level=3"]
+rustflags = ["-C", "target-cpu=native"]
 
 [tool.maturin.target.aarch64-apple-darwin]
-rustflags = ["-C", "target-cpu=native", "-C", "opt-level=3"]
+rustflags = ["-C", "target-cpu=native"]
 
 # Python tooling configuration
 [tool.black]
 line-length = 100
 target-version = ['py38', 'py39', 'py310', 'py311', 'py312']
-include = '\.pyi?
+include = '\.pyi?$'
 extend-exclude = '''
 /(
     \.eggs
@@ -275,7 +264,82 @@ module = [
     "numpy.*",
     "scipy.*",
     "matplotlib.*",
-    "pandas.*",
-    "sentence_transformers.*",
+    "pandas.*"
 ]
 ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+    "--disable-warnings"
+]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+    "benchmark: marks tests as benchmarks"
+]
+
+# Documentation configuration
+[tool.sphinx]
+source-dir = "docs"
+build-dir = "docs/_build"
+
+# Coverage configuration
+[tool.coverage.run]
+source = ["nseekfs"]
+omit = [
+    "*/tests/*",
+    "*/test_*",
+    "setup.py"
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if self.debug:",
+    "if settings.DEBUG",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if 0:",
+    "if __name__ == .__main__.:",
+    "class .*\\bProtocol\\):",
+    "@(abc\\.)?abstractmethod",
+]
+
+# Build profiles for different targets
+[tool.cibuildwheel]
+# Build wheels for CPython 3.8+
+build = "cp38-* cp39-* cp310-* cp311-* cp312-*"
+skip = "cp36-* cp37-* pp* *-win32 *-manylinux_i686"
+
+# Linux
+[tool.cibuildwheel.linux]
+before-all = [
+    "curl https://sh.rustup.rs -sSf | sh -s -- --default-toolchain stable -y",
+    "source ~/.cargo/env"
+]
+environment = { PATH = "$HOME/.cargo/bin:$PATH" }
+repair-wheel-command = "auditwheel repair -w {dest_dir} {wheel}"
+
+# macOS  
+[tool.cibuildwheel.macos]
+before-all = [
+    "curl https://sh.rustup.rs -sSf | sh -s -- --default-toolchain stable -y"
+]
+environment = { PATH = "$HOME/.cargo/bin:$PATH" }
+repair-wheel-command = "delocate-wheel --require-archs {delocate_archs} -w {dest_dir} -v {wheel}"
+
+# Windows
+[tool.cibuildwheel.windows]
+before-build = [
+    "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain stable -y",
+    "call %USERPROFILE%\\.cargo\\env.cmd"
+]

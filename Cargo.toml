@@ -1,5 +1,5 @@
 [package]
-name = "nseekrs"
+name = "nseekfs"    # ← CORRIGIR para "nseekfs"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
@@ -55,6 +55,6 @@ numpy = "0.20"
 half = "2.4"
 
 [profile.release]
-opt-level = "z"
-lto = true
+opt-level = 3
+lto = "fat"
 codegen-units = 1
