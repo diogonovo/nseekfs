@@ -1,213 +1,572 @@
-import numpy as np
-from typing import List, Union, Optional, Dict, Any
-import logging
-from pathlib import Path
-import time
-import threading
-from concurrent.futures import ThreadPoolExecutor
-from .validation import (
-    validate_embeddings, validate_query_vector, validate_level, 
-    validate_top_k, validate_method, validate_similarity
-)
+"""
+NSeekFS High-Level Python API with Timer Fix
 
+This module provides the high-level, user-friendly API for NSeekFS vector search.
+It wraps the low-level Rust engine with convenient Python interfaces.
+"""
+
+import logging
+import time
+import warnings
+from pathlib import Path
+from typing import Union, List, Optional, Dict, Any, Tuple
+
+import numpy as np
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ========== CONFIGURAÇÕES DE SEGURANÇA ==========
-MAX_CONCURRENT_QUERIES = 4  # Limite de queries simultâneas
-MEMORY_WARNING_THRESHOLD = 1024 * 1024 * 1024  # 1GB warning
-MAX_VECTOR_SIZE = 10000  # Dimensões máximas por segurança
-MAX_DATASET_SIZE = 100_000_000  # 100M vetores máximo
+# Constants for validation
+MEMORY_WARNING_THRESHOLD = 2 * 1024**3  # 2GB
+SUPPORTED_LEVELS = ["f8", "f16", "f32", "f64"]
+MAX_DIMENSIONS = 10000
+MIN_DIMENSIONS = 1
+MAX_VECTORS = 100_000_000
 
-# ========== EXCEPTION CLASSES ESPECÍFICAS ==========
-class NSeekError(Exception):
-    """Base exception para erros do NSeek"""
+
+class ValidationError(ValueError):
+    """Raised when input validation fails"""
     pass
 
-class NSeekValidationError(NSeekError):
-    """Erro de validação de entrada"""
+
+class IndexError(Exception):
+    """Raised when index operations fail"""
     pass
 
-class NSeekMemoryError(NSeekError):
-    """Erro relacionado a memória/recursos"""
-    pass
 
-class NSeekIndexError(NSeekError):
-    """Erro relacionado ao índice"""
-    pass
-
-# ========== THREAD-SAFE QUERY LIMITER ==========
-class QueryLimiter:
-    """Limita número de queries simultâneas para evitar sobrecarga"""
+def validate_embeddings(embeddings: Union[np.ndarray, List[List[float]], str]) -> np.ndarray:
+    """Validate and convert embeddings to proper numpy format"""
     
-    def __init__(self, max_concurrent: int = MAX_CONCURRENT_QUERIES):
-        self._semaphore = threading.Semaphore(max_concurrent)
-        self._active_queries = 0
-        self._lock = threading.Lock()
+    if isinstance(embeddings, str):
+        raise ValidationError("String embeddings not supported. Use numpy array or list.")
     
-    def __enter__(self):
-        self._semaphore.acquire()
-        with self._lock:
-            self._active_queries += 1
-        return self
+    if isinstance(embeddings, list):
+        embeddings = np.array(embeddings, dtype=np.float32)
     
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        with self._lock:
-            self._active_queries -= 1
-        self._semaphore.release()
+    if not isinstance(embeddings, np.ndarray):
+        raise ValidationError(f"Embeddings must be numpy array or list, got {type(embeddings)}")
     
-    def active_count(self) -> int:
-        with self._lock:
-            return self._active_queries
-
-# ========== CLASSE NSEEK MELHORADA ==========
-class NSeek:
-    """
-    High-level interface for initializing and querying vector search indexes using nseekfs.
+    if embeddings.ndim != 2:
+        raise ValidationError(f"Embeddings must be 2D array, got {embeddings.ndim}D")
     
-    Thread-safe with built-in resource management and safety checks.
-    """
-
-    def __init__(self, engine, level: str, normalized: bool):
-        # Validações iniciais
-        if engine is None:
-            raise NSeekIndexError("Engine cannot be None")
-        if not isinstance(level, str) or level not in {"f8", "f16", "f32", "f64"}:
-            raise NSeekValidationError(f"Invalid level: {level}")
-        if not isinstance(normalized, bool):
-            raise NSeekValidationError("normalized must be boolean")
+    if embeddings.shape[0] == 0 or embeddings.shape[1] == 0:
+        raise ValidationError(f"Embeddings cannot be empty, got shape {embeddings.shape}")
+    
+    if embeddings.shape[1] > MAX_DIMENSIONS:
+        raise ValidationError(f"Too many dimensions: {embeddings.shape[1]} (max: {MAX_DIMENSIONS})")
+    
+    if embeddings.shape[0] > MAX_VECTORS:
+        raise ValidationError(f"Too many vectors: {embeddings.shape[0]} (max: {MAX_VECTORS})")
+    
+    # Convert to contiguous f32 array if needed
+    if embeddings.dtype != np.float32:
+        logger.info(f"Converting embeddings from {embeddings.dtype} to float32")
+        embeddings = embeddings.astype(np.float32)
+    
+    if not embeddings.flags['C_CONTIGUOUS']:
+        logger.info("Making embeddings C-contiguous")
+        embeddings = np.ascontiguousarray(embeddings)
+    
+    # Check for invalid values
+    invalid_mask = ~np.isfinite(embeddings)
+    if invalid_mask.any():
+        invalid_count = invalid_mask.sum()
+        total_count = embeddings.size
+        percentage = (invalid_count / total_count) * 100
         
+        if percentage > 1.0:
+            raise ValidationError(f"Too many invalid values: {percentage:.1f}% ({invalid_count}/{total_count})")
+        else:
+            logger.warning(f"Found {invalid_count} invalid values ({percentage:.2f}%)")
+    
+    return embeddings
+
+
+def validate_level(level: str) -> str:
+    """Validate precision level"""
+    if not isinstance(level, str):
+        raise ValidationError(f"Level must be string, got {type(level)}")
+    
+    if level not in SUPPORTED_LEVELS:
+        raise ValidationError(f"Invalid level '{level}'. Supported: {SUPPORTED_LEVELS}")
+    
+    return level
+
+
+class VectorSearch:
+    """
+    High-level vector search interface with timing support
+    
+    This class provides a user-friendly API around the low-level Rust engine,
+    with proper error handling, logging, and timing measurement.
+    """
+    
+    def __init__(self, engine, level: str = "f32", normalized: bool = True):
+        """Initialize VectorSearch with engine"""
         self.engine = engine
         self.level = level
         self.normalized = normalized
-        self._query_limiter = QueryLimiter()
         self._creation_time = time.time()
-        self._query_count = 0
-        self._lock = threading.RLock()  # Reentrant lock para thread safety
         
-        # Verificar saúde do engine
-        try:
-            dims = self.engine.dims()
-            rows = self.engine.rows()
+        logger.info(f"VectorSearch initialized: {self.dims}D x {self.rows} vectors, level={level}")
+
+    def __repr__(self) -> str:
+        return f"VectorSearch(dims={self.dims}, rows={self.rows}, level='{self.level}', ann={self.has_ann})"
+
+    def __enter__(self):
+        """Context manager entry"""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit"""
+        # Engine cleanup is handled automatically by Rust Drop
+        pass
+
+    @property
+    def dims(self) -> int:
+        """Number of dimensions"""
+        return self.engine.dims()
+
+    @property
+    def rows(self) -> int:
+        """Number of vectors"""
+        return self.engine.rows()
+
+    @property
+    def has_ann(self) -> bool:
+        """Whether ANN is available"""
+        return self.engine.has_ann()
+
+    @property
+    def memory_usage_mb(self) -> float:
+        """Memory usage in MB"""
+        return self.engine.memory_usage_mb()
+
+    @property
+    def stats(self) -> Dict[str, Any]:
+        """Engine statistics"""
+        queries, avg_time, ann, exact, simd, scalar, uptime = self.engine.get_stats()
+        return {
+            "total_queries": queries,
+            "avg_query_time_ms": avg_time,
+            "ann_queries": ann,
+            "exact_queries": exact,
+            "simd_queries": simd,
+            "scalar_queries": scalar,
+            "uptime_seconds": uptime,
+            "memory_usage_mb": self.memory_usage_mb,
+        }
+
+    def query(
+        self,
+        query_vector: Union[np.ndarray, List[float]],
+        top_k: int = 10,
+        method: Optional[str] = None,
+        return_scores: bool = True,
+        return_timing: bool = False,
+    ) -> Union[List[Dict[str, Any]], Tuple[List[Dict[str, Any]], Dict[str, Any]]]:
+        """
+        Query the index with timing support
+        
+        Args:
+            query_vector: Query vector as numpy array or list
+            top_k: Number of results to return
+            method: Search method ("auto", "exact", "ann", or None for auto)
+            return_scores: Include similarity scores in results
+            return_timing: Return timing information
             
-            if dims <= 0 or dims > MAX_VECTOR_SIZE:
-                raise NSeekIndexError(f"Invalid dimensions: {dims}")
-            if rows <= 0 or rows > MAX_DATASET_SIZE:
-                raise NSeekIndexError(f"Invalid row count: {rows}")
-                
-            # Estimar uso de memória
-            estimated_memory = dims * rows * 4  # f32 = 4 bytes
-            if estimated_memory > MEMORY_WARNING_THRESHOLD:
-                logger.warning(f"Large index loaded: ~{estimated_memory / (1024**3):.1f}GB memory usage")
-                
-        except Exception as e:
-            raise NSeekIndexError(f"Engine validation failed: {e}")
+        Returns:
+            List of result dictionaries, optionally with timing info
+            
+        Example:
+            results = index.query(query_vector, top_k=5)
+            results, timing = index.query(query_vector, top_k=5, return_timing=True)
+        """
+        start_time = time.time()
         
-        logger.info(f"NSeek initialized: {dims}D x {rows} vectors, level={level}")
+        # Validate inputs
+        if isinstance(query_vector, list):
+            query_vector = np.array(query_vector, dtype=np.float32)
+        elif isinstance(query_vector, np.ndarray):
+            query_vector = query_vector.astype(np.float32)
+        else:
+            raise ValidationError(f"Query vector must be numpy array or list, got {type(query_vector)}")
+
+        if query_vector.ndim != 1:
+            raise ValidationError(f"Query vector must be 1D, got {query_vector.ndim}D")
+
+        if len(query_vector) != self.dims:
+            raise ValidationError(f"Query vector dimension mismatch: expected {self.dims}, got {len(query_vector)}")
+
+        if top_k <= 0:
+            raise ValidationError(f"top_k must be positive, got {top_k}")
+
+        if top_k > self.rows:
+            logger.warning(f"top_k ({top_k}) exceeds number of vectors ({self.rows}), limiting to {self.rows}")
+            top_k = self.rows
+
+        # Normalize query vector if index is normalized
+        if self.normalized:
+            norm = np.linalg.norm(query_vector)
+            if norm > 0:
+                query_vector = query_vector / norm
+
+        try:
+            # Use new timing-aware method if available
+            if hasattr(self.engine, 'query_with_timing'):
+                logger.debug("Using query_with_timing method")
+                result = self.engine.query_with_timing(
+                    query_vector.tolist(), 
+                    top_k, 
+                    method
+                )
+                
+                # Convert to standard format
+                results = []
+                for item in result.results:
+                    result_dict = {"idx": item.idx}
+                    if return_scores:
+                        result_dict["score"] = item.score
+                    results.append(result_dict)
+
+                timing_info = {
+                    "query_time_ms": result.query_time_ms,
+                    "method_used": result.method_used,
+                    "candidates_generated": result.candidates_generated,
+                    "simd_used": result.simd_used,
+                }
+                
+            else:
+                # Fallback to legacy method
+                logger.debug("Using legacy query method")
+                raw_results = self.engine.query(
+                    query_vector.tolist(), 
+                    top_k, 
+                    method or "auto"
+                )
+                
+                # Convert format
+                results = []
+                for item in raw_results:
+                    result_dict = {"idx": item["idx"]}
+                    if return_scores:
+                        result_dict["score"] = item["score"]
+                    results.append(result_dict)
+
+                python_time = (time.time() - start_time) * 1000
+                timing_info = {
+                    "query_time_ms": python_time,
+                    "method_used": method or "auto",
+                    "candidates_generated": 0,
+                    "simd_used": len(query_vector) >= 64,
+                }
+
+            logger.debug(f"Query completed: {len(results)} results in {timing_info['query_time_ms']:.3f}ms")
+
+            if return_timing:
+                return results, timing_info
+            else:
+                return results
+
+        except Exception as e:
+            logger.error(f"Query failed: {e}")
+            raise IndexError(f"Query failed: {e}")
+
+    def query_batch(
+        self,
+        query_vectors: Union[np.ndarray, List[List[float]]],
+        top_k: int = 10,
+        method: Optional[str] = None,
+        return_scores: bool = True,
+        return_timing: bool = False,
+    ) -> Union[List[List[Dict[str, Any]]], Tuple[List[List[Dict[str, Any]]], Dict[str, Any]]]:
+        """
+        Query multiple vectors at once
+        
+        Args:
+            query_vectors: Multiple query vectors as 2D array
+            top_k: Number of results per query
+            method: Search method
+            return_scores: Include similarity scores
+            return_timing: Return timing information
+            
+        Returns:
+            List of result lists, optionally with timing info
+        """
+        start_time = time.time()
+        
+        # Validate inputs
+        if isinstance(query_vectors, list):
+            query_vectors = np.array(query_vectors, dtype=np.float32)
+        elif isinstance(query_vectors, np.ndarray):
+            query_vectors = query_vectors.astype(np.float32)
+        else:
+            raise ValidationError(f"Query vectors must be numpy array or list, got {type(query_vectors)}")
+
+        if query_vectors.ndim != 2:
+            raise ValidationError(f"Query vectors must be 2D, got {query_vectors.ndim}D")
+
+        if query_vectors.shape[1] != self.dims:
+            raise ValidationError(f"Query vectors dimension mismatch: expected {self.dims}, got {query_vectors.shape[1]}")
+
+        # Process each query
+        all_results = []
+        total_query_time = 0.0
+        
+        for i, query_vector in enumerate(query_vectors):
+            try:
+                result, timing = self.query(
+                    query_vector, 
+                    top_k=top_k, 
+                    method=method, 
+                    return_scores=return_scores, 
+                    return_timing=True
+                )
+                all_results.append(result)
+                total_query_time += timing["query_time_ms"]
+                
+            except Exception as e:
+                logger.error(f"Batch query {i} failed: {e}")
+                all_results.append([])  # Empty result for failed query
+
+        batch_time = (time.time() - start_time) * 1000
+        
+        timing_info = {
+            "total_time_ms": batch_time,
+            "avg_query_time_ms": total_query_time / len(query_vectors),
+            "queries_processed": len(query_vectors),
+            "method_used": method or "auto",
+        }
+
+        logger.info(f"Batch query completed: {len(query_vectors)} queries in {batch_time:.2f}ms")
+
+        if return_timing:
+            return all_results, timing_info
+        else:
+            return all_results
+
+    def debug_query(
+        self,
+        query_vector: Union[np.ndarray, List[float]],
+        top_k: int = 10,
+        force_method: str = "auto",
+    ) -> Dict[str, Any]:
+        """
+        Debug query with detailed timing information
+        
+        Args:
+            query_vector: Query vector
+            top_k: Number of results
+            force_method: Force specific method ("ann", "exact")
+            
+        Returns:
+            Dictionary with results and detailed timing
+        """
+        # Validate and convert query
+        if isinstance(query_vector, list):
+            query_vector = np.array(query_vector, dtype=np.float32)
+        elif isinstance(query_vector, np.ndarray):
+            query_vector = query_vector.astype(np.float32)
+
+        if len(query_vector) != self.dims:
+            raise ValidationError(f"Query vector dimension mismatch: expected {self.dims}, got {len(query_vector)}")
+
+        # Normalize if needed
+        if self.normalized:
+            norm = np.linalg.norm(query_vector)
+            if norm > 0:
+                query_vector = query_vector / norm
+
+        debug_info = {
+            "query_vector_norm": float(np.linalg.norm(query_vector)),
+            "index_info": {
+                "dims": self.dims,
+                "rows": self.rows,
+                "has_ann": self.has_ann,
+                "level": self.level,
+                "normalized": self.normalized,
+            }
+        }
+
+        try:
+            # Try specific debug methods if available
+            if force_method == "ann" and hasattr(self.engine, 'query_ann_debug'):
+                result = self.engine.query_ann_debug(query_vector.tolist(), top_k)
+                debug_info["method_used"] = "ann_debug"
+                
+            elif force_method == "exact" and hasattr(self.engine, 'query_exact_debug'):
+                result = self.engine.query_exact_debug(query_vector.tolist(), top_k)
+                debug_info["method_used"] = "exact_debug"
+                
+            else:
+                # Use regular method with timing
+                result = self.engine.query_with_timing(query_vector.tolist(), top_k, force_method)
+                debug_info["method_used"] = "unified"
+
+            # Convert results
+            results = [{"idx": item.idx, "score": item.score} for item in result.results]
+            
+            debug_info.update({
+                "results": results,
+                "timing": {
+                    "query_time_ms": result.query_time_ms,
+                    "method_used": result.method_used,
+                    "candidates_generated": result.candidates_generated,
+                    "simd_used": result.simd_used,
+                },
+                "performance": {
+                    "results_per_ms": len(results) / max(result.query_time_ms, 0.001),
+                    "candidates_per_result": result.candidates_generated / max(len(results), 1) if result.candidates_generated > 0 else 0,
+                }
+            })
+
+            return debug_info
+
+        except Exception as e:
+            debug_info["error"] = str(e)
+            logger.error(f"Debug query failed: {e}")
+            return debug_info
+
+    def health_check(self) -> Dict[str, Any]:
+        """
+        Perform health check on the index
+        
+        Returns:
+            Dictionary with health status and diagnostics
+        """
+        health_info = {
+            "status": "unknown",
+            "engine_healthy": False,
+            "basic_test_passed": False,
+            "basic_test_time_ms": 0.0,
+            "error": None,
+        }
+
+        try:
+            # Check engine health
+            engine_healthy = self.engine.health_check()
+            health_info["engine_healthy"] = engine_healthy
+
+            if not engine_healthy:
+                health_info["status"] = "unhealthy"
+                health_info["error"] = "Engine health check failed"
+                return health_info
+
+            # Basic query test
+            if self.rows > 0:
+                test_vector = np.random.randn(self.dims).astype(np.float32)
+                if self.normalized:
+                    test_vector = test_vector / np.linalg.norm(test_vector)
+
+                start_time = time.time()
+                results = self.query(test_vector, top_k=1, return_timing=False)
+                test_time = (time.time() - start_time) * 1000
+
+                health_info["basic_test_time_ms"] = test_time
+                health_info["basic_test_passed"] = len(results) > 0
+
+            # Overall status
+            if health_info["engine_healthy"] and health_info["basic_test_passed"]:
+                health_info["status"] = "healthy"
+            else:
+                health_info["status"] = "degraded"
+
+        except Exception as e:
+            health_info["status"] = "error"
+            health_info["error"] = str(e)
+            logger.error(f"Health check failed: {e}")
+
+        return health_info
 
     @classmethod
     def create_index(
         cls,
-        embeddings: Union[np.ndarray, List[List[float]], str],
+        embeddings: Union[np.ndarray, List[List[float]]],
         level: str = "f32",
-        normalized: Optional[bool] = True,
+        normalized: bool = True,
         ann: bool = True,
         base_name: str = "default",
         output_dir: Optional[Union[str, Path]] = None,
         seed: int = 42,
     ) -> str:
         """
-        Create a binary index from embeddings and return the created file path.
+        Create binary index file from embeddings
         
         Args:
-            embeddings: Input embeddings (array, list, or file path)
+            embeddings: Vector data as numpy array or list
             level: Precision level ("f8", "f16", "f32", "f64")
-            normalized: Whether embeddings are normalized (None=auto-normalize)
-            ann: Enable approximate nearest neighbors
-            base_name: Base name for index files
-            output_dir: Output directory path
-            seed: Random seed for ANN index
+            normalized: Whether vectors are normalized
+            ann: Enable approximate nearest neighbor
+            base_name: Base filename for output
+            output_dir: Output directory
+            seed: Random seed for reproducibility
             
         Returns:
-            str: Path to the created .bin file
+            str: Path to created binary index file
             
         Raises:
-            NSeekValidationError: Invalid input parameters
-            NSeekMemoryError: Memory constraints exceeded
-            NSeekIndexError: Index creation failed
+            ValidationError: Invalid input parameters
+            MemoryError: Insufficient memory
+            IndexError: Index creation failed
         """
         from .nseekfs import py_prepare_bin_from_embeddings
 
         start_time = time.time()
         
         try:
-            # Validação rigorosa de inputs
+            # Validate and convert embeddings
             embeddings = validate_embeddings(embeddings)
             level = validate_level(level)
             
-            if not isinstance(seed, int) or seed < 0:
-                raise NSeekValidationError("seed must be a non-negative integer")
-
-            if not isinstance(base_name, str) or not base_name.strip():
-                raise NSeekValidationError("base_name must be a non-empty string")
-
-            n, d = embeddings.shape
-            
-            # Verificações de limites de segurança
-            if d > MAX_VECTOR_SIZE:
-                raise NSeekMemoryError(f"Vector dimension too large: {d} > {MAX_VECTOR_SIZE}")
-            
-            if n > MAX_DATASET_SIZE:
-                raise NSeekMemoryError(f"Dataset too large: {n} > {MAX_DATASET_SIZE}")
-            
-            # Estimar uso de memória
-            estimated_memory = n * d * 4  # f32 bytes
+            # Memory check
+            estimated_memory = embeddings.nbytes
             if estimated_memory > MEMORY_WARNING_THRESHOLD:
-                logger.warning(f"Large dataset: ~{estimated_memory / (1024**3):.1f}GB estimated memory usage")
+                logger.warning(f"Large embeddings: {estimated_memory / (1024**3):.1f}GB")
             
-            logger.info(f"Creating index: {n} vectors, {d} dimensions, level={level}, ann={ann}")
-
-            # Normalization logic com validação
-            if normalized is True:
-                normalize_flag = False  # Already normalized
-                # Verificar se realmente está normalizado
-                sample_norms = np.linalg.norm(embeddings[:min(100, n)], axis=1)
-                if not np.allclose(sample_norms, 1.0, atol=0.1):
-                    logger.warning("normalized=True but vectors don't appear normalized")
-            elif normalized is False:
-                normalize_flag = True   # Normalize in Rust
-            elif normalized is None:
-                normalize_flag = True   # Default normalize
-                logger.info("Auto-normalizing vectors")
+            # Setup output directory
+            if output_dir is None:
+                output_dir = Path.cwd() / "nseekfs_indexes"
             else:
-                raise NSeekValidationError("normalized must be True, False, or None")
-
-            # Validar embeddings para valores inválidos
-            if np.any(~np.isfinite(embeddings)):
-                raise NSeekValidationError("Embeddings contain NaN or infinite values")
-
-            created_path = py_prepare_bin_from_embeddings(
+                output_dir = Path(output_dir)
+            
+            output_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Normalize if requested
+            if normalized:
+                norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+                norms = np.where(norms == 0, 1, norms)  # Avoid division by zero
+                embeddings = embeddings / norms
+            
+            logger.info(f"Creating {level} index: {embeddings.shape[0]} vectors x {embeddings.shape[1]} dims")
+            
+            # Create binary index
+            bin_path = py_prepare_bin_from_embeddings(
                 embeddings=embeddings,
+                dims=embeddings.shape[1],
+                rows=embeddings.shape[0],
                 base_name=base_name,
                 level=level,
+                output_dir=str(output_dir),
                 ann=ann,
-                normalize=normalize_flag,
-                seed=seed,
-                output_dir=str(output_dir) if output_dir else None
+                normalize=False,  # Already normalized above if requested
+                seed=seed
             )
             
             elapsed = time.time() - start_time
-            logger.info(f"Index created successfully in {elapsed:.2f}s: {created_path}")
-            return created_path
-
-        except NSeekValidationError:
-            raise
-        except NSeekMemoryError:
+            file_size = Path(bin_path).stat().st_size / (1024**2)  # MB
+            logger.info(f"Index created in {elapsed:.2f}s: {bin_path} ({file_size:.1f}MB)")
+            
+            return bin_path
+            
+        except ValidationError:
             raise
         except MemoryError as e:
-            raise NSeekMemoryError(f"Out of memory during index creation: {e}")
+            logger.error(f"Memory error during index creation: {e}")
+            raise MemoryError(f"Out of memory during index creation: {e}")
         except Exception as e:
             logger.error(f"Index creation failed: {e}")
-            raise NSeekIndexError(f"Failed to create index for level '{level}': {e}")
+            raise IndexError(f"Failed to create index for level '{level}': {e}")
 
     @classmethod
     def load_index(
@@ -216,23 +575,22 @@ class NSeek:
         normalized: bool = True,
         ann: bool = True,
         level: Optional[str] = None
-    ) -> "NSeek":
+    ) -> "VectorSearch":
         """
         Load an existing index from a .bin file
         
         Args:
-            bin_path: Path to the .bin file
+            bin_path: Path to binary index file  
             normalized: Whether vectors are normalized
-            ann: Enable ANN if available
-            level: Precision level (inferred from filename if not specified)
+            ann: Enable approximate nearest neighbor
+            level: Precision level (auto-detected if None)
             
         Returns:
-            NSeek: Loaded index instance
+            VectorSearch: Loaded vector search index
             
         Raises:
-            FileNotFoundError: Binary file not found
-            NSeekIndexError: Failed to load index
-            NSeekValidationError: Invalid parameters
+            FileNotFoundError: Index file not found
+            IndexError: Failed to load index
         """
         from .nseekfs import PySearchEngine
 
@@ -240,43 +598,33 @@ class NSeek:
         
         try:
             bin_path = Path(bin_path)
+            
             if not bin_path.exists():
-                raise FileNotFoundError(f"Binary file not found: {bin_path}")
-
-            if not bin_path.is_file():
-                raise NSeekValidationError(f"Path is not a file: {bin_path}")
-
-            # Verificar tamanho do arquivo
-            file_size = bin_path.stat().st_size
-            if file_size < 16:  # Mínimo: 8 bytes header + 8 bytes data
-                raise NSeekIndexError(f"Binary file too small: {file_size} bytes")
-            
-            if file_size > MEMORY_WARNING_THRESHOLD:
-                logger.warning(f"Large index file: {file_size / (1024**3):.1f}GB")
-
-            # Infer level from filename if not specified
-            if level is None:
-                level = bin_path.stem  # f32.bin -> f32
-            
-            level = validate_level(level)
-
-            if not isinstance(normalized, bool):
-                raise NSeekValidationError("normalized must be a boolean")
-            
+                raise FileNotFoundError(f"Index file not found: {bin_path}")
+          
             if not isinstance(ann, bool):
-                raise NSeekValidationError("ann must be a boolean")
+                raise ValidationError("ann must be a boolean")
+
+            # Auto-detect level from filename if not provided
+            if level is None:
+                for supported_level in SUPPORTED_LEVELS:
+                    if f"_{supported_level}." in str(bin_path):
+                        level = supported_level
+                        break
+                else:
+                    level = "f32"  # Default fallback
 
             logger.info(f"Loading index from: {bin_path}")
             
-            # Tentar carregar com timeout para detectar problemas
+            # Try to load with timeout to detect issues
             engine = PySearchEngine(str(bin_path), ann=ann)
             
-            # Validar engine carregado
+            # Validate loaded engine
             dims = engine.dims()
             rows = engine.rows()
             
             if dims <= 0 or rows <= 0:
-                raise NSeekIndexError(f"Invalid engine dimensions: {dims}x{rows}")
+                raise IndexError(f"Invalid engine dimensions: {dims}x{rows}")
             
             elapsed = time.time() - start_time
             logger.info(f"Index loaded in {elapsed:.2f}s: dims={dims}, rows={rows}")
@@ -285,13 +633,13 @@ class NSeek:
 
         except FileNotFoundError:
             raise
-        except NSeekValidationError:
+        except ValidationError:
             raise
-        except NSeekIndexError:
+        except IndexError:
             raise
         except Exception as e:
             logger.error(f"Failed to load engine: {e}")
-            raise NSeekIndexError(f"Failed to load engine from '{bin_path}': {e}")
+            raise IndexError(f"Failed to load engine from '{bin_path}': {e}")
 
     @classmethod
     def from_embeddings(
@@ -303,46 +651,49 @@ class NSeek:
         base_name: str = "default",
         output_dir: Optional[Union[str, Path]] = None,
         force_rebuild: bool = False,
-    ) -> "NSeek":
+    ) -> "VectorSearch":
         """
         Convenience method that creates and loads an index in one step.
         If index exists and force_rebuild=False, loads it. Otherwise creates new.
         
+        This is the main entry point most users should use.
+        
         Args:
-            embeddings: Input embeddings
-            level: Precision level
-            normalized: Normalization setting
-            ann: Enable ANN
-            base_name: Base name for files
-            output_dir: Output directory
+            embeddings: Vector data as numpy array or list
+            level: Precision level ("f8", "f16", "f32", "f64")  
+            normalized: Whether to normalize vectors
+            ann: Enable approximate nearest neighbor
+            base_name: Base filename for index
+            output_dir: Directory for index files
             force_rebuild: Force rebuild even if index exists
             
         Returns:
-            NSeek: Ready-to-use index
+            VectorSearch: Ready-to-query vector search index
             
-        Raises:
-            NSeekValidationError: Invalid parameters
-            NSeekIndexError: Index creation/loading failed
+        Example:
+            import nseekfs
+            import numpy as np
+            
+            vectors = np.random.randn(1000, 384).astype(np.float32)
+            index = nseekfs.from_embeddings(vectors)
+            results = index.query(query_vector, top_k=10)
         """
         try:
-            # Determinar bin file path
-            if output_dir:
-                bin_path = Path(output_dir) / f"{level}.bin"
+            # Setup paths
+            if output_dir is None:
+                output_dir = Path.cwd() / "nseekfs_indexes"
             else:
-                base_dir = Path.home() / ".nseek" / "indexes" / base_name
-                bin_path = base_dir / f"{level}.bin"
-
+                output_dir = Path(output_dir)
+            
+            bin_path = output_dir / f"{base_name}_{level}.bin"
+            
             # Load existing if available and not forcing rebuild
             if bin_path.exists() and not force_rebuild:
-                try:
-                    logger.info(f"Loading existing index from {bin_path}")
-                    return cls.load_index(bin_path, normalized=(normalized is not False), ann=ann, level=level)
-                except Exception as e:
-                    logger.warning(f"Failed to load existing index: {e}, rebuilding...")
-                    # Continue to create new index
+                logger.info(f"Loading existing index: {bin_path}")
+                return cls.load_index(bin_path, normalized=normalized, ann=ann, level=level)
             
             # Create new index
-            logger.info(f"Creating new index at {bin_path}")
+            logger.info(f"Creating new index: {bin_path}")
             created_path = cls.create_index(
                 embeddings=embeddings,
                 level=level,
@@ -352,307 +703,14 @@ class NSeek:
                 output_dir=output_dir
             )
             
-            # Load the newly created index
-            return cls.load_index(created_path, normalized=(normalized is not False), ann=ann, level=level)
+            # Load the created index
+            return cls.load_index(created_path, normalized=normalized, ann=ann, level=level)
             
-        except (NSeekValidationError, NSeekIndexError, NSeekMemoryError):
-            raise
         except Exception as e:
             logger.error(f"from_embeddings failed: {e}")
-            raise NSeekIndexError(f"Failed to create index from embeddings: {e}")
-
-    def query(
-        self,
-        query_vector: Union[np.ndarray, List[float]],
-        top_k: int = 5,
-        method: str = "auto",
-        similarity: str = "cosine"
-    ) -> List[Dict[str, Union[int, float]]]:
-        """
-        Execute a query on the loaded index.
-        
-        Args:
-            query_vector: Query vector
-            top_k: Number of results to return
-            method: Search method ("simd", "scalar", "auto")
-            similarity: Similarity metric ("cosine", "euclidean", "dot_product")
-            
-        Returns:
-            List[dict]: Results with 'idx' and 'score' keys
-            
-        Raises:
-            NSeekValidationError: Invalid parameters
-            NSeekIndexError: Search failed
-        """
-        with self._query_limiter:  # Thread-safe query limiting
-            try:
-                with self._lock:
-                    self._query_count += 1
-                    query_id = self._query_count
-
-                start_time = time.time()
-                
-                # Validações rigorosas
-                query_vector = validate_query_vector(query_vector, self.dims)
-                top_k = validate_top_k(top_k, self.rows)
-                method = validate_method(method)
-                similarity = validate_similarity(similarity)
-
-                # Validar query vector para valores inválidos
-                if np.any(~np.isfinite(query_vector)):
-                    raise NSeekValidationError("Query vector contains NaN or infinite values")
-
-                # Normalize query if needed for cosine similarity
-                if similarity == "cosine" and not self.normalized:
-                    norm = np.linalg.norm(query_vector)
-                    if norm > 0:
-                        query_vector = query_vector / norm
-                    else:
-                        raise NSeekValidationError("Query vector has zero norm for cosine similarity")
-
-                logger.debug(f"Query {query_id}: top_k={top_k}, method={method}, similarity={similarity}")
-
-                # Execute query with timeout protection
-                results = self.engine.top_k_query(
-                    query_vector.tolist(), 
-                    top_k, 
-                    method=method, 
-                    similarity=similarity
-                )
-                
-                # Validar resultados
-                if not isinstance(results, list):
-                    raise NSeekIndexError("Engine returned invalid results type")
-                
-                valid_results = []
-                for i, (idx, score) in enumerate(results):
-                    if not isinstance(idx, (int, np.integer)):
-                        logger.warning(f"Invalid index type at position {i}: {type(idx)}")
-                        continue
-                    if not isinstance(score, (float, np.floating)) or not np.isfinite(score):
-                        logger.warning(f"Invalid score at position {i}: {score}")
-                        continue
-                    if idx < 0 or idx >= self.rows:
-                        logger.warning(f"Index out of bounds at position {i}: {idx}")
-                        continue
-                    
-                    valid_results.append({"idx": int(idx), "score": float(score)})
-                
-                elapsed = time.time() - start_time
-                logger.debug(f"Query {query_id} completed in {elapsed*1000:.2f}ms, {len(valid_results)} results")
-                
-                return valid_results
-                
-            except NSeekValidationError:
-                raise
-            except Exception as e:
-                logger.error(f"Search failed: {e}")
-                raise NSeekIndexError(f"Search failed at level {self.level}: {e}")
-
-    def query_batch(
-        self,
-        query_vectors: Union[np.ndarray, List[List[float]]],
-        top_k: int = 5,
-        method: str = "auto",
-        similarity: str = "cosine",
-        max_workers: Optional[int] = None
-    ) -> List[List[Dict[str, Union[int, float]]]]:
-        """
-        Execute multiple queries in parallel (thread-safe).
-        
-        Args:
-            query_vectors: Multiple query vectors
-            top_k: Number of results per query
-            method: Search method
-            similarity: Similarity metric
-            max_workers: Maximum parallel workers (None=auto)
-            
-        Returns:
-            List of results for each query
-            
-        Raises:
-            NSeekValidationError: Invalid parameters
-            NSeekIndexError: Batch search failed
-        """
-        try:
-            query_vectors = np.asarray(query_vectors, dtype=np.float32)
-            
-            if query_vectors.ndim != 2:
-                raise NSeekValidationError("query_vectors must be 2D")
-            
-            if query_vectors.shape[1] != self.dims:
-                raise NSeekValidationError(f"Query dimension mismatch: expected {self.dims}, got {query_vectors.shape[1]}")
-            
-            n_queries = query_vectors.shape[0]
-            if n_queries == 0:
-                return []
-            
-            # Limitar workers para evitar sobrecarga
-            if max_workers is None:
-                max_workers = min(MAX_CONCURRENT_QUERIES, n_queries)
-            else:
-                max_workers = min(max_workers, MAX_CONCURRENT_QUERIES)
-            
-            logger.info(f"Batch query: {n_queries} queries with {max_workers} workers")
-            
-            def query_single(query_vec):
-                return self.query(query_vec, top_k=top_k, method=method, similarity=similarity)
-            
-            # Execute em paralelo com ThreadPoolExecutor
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                results = list(executor.map(query_single, query_vectors))
-            
-            logger.info(f"Batch query completed: {n_queries} queries processed")
-            return results
-            
-        except Exception as e:
-            logger.error(f"Batch query failed: {e}")
-            raise NSeekIndexError(f"Batch query failed: {e}")
-
-    def get_vector(self, idx: int) -> np.ndarray:
-        """
-        Return the vector at the specified index.
-        
-        Args:
-            idx: Vector index
-            
-        Returns:
-            np.ndarray: Vector at the index
-            
-        Raises:
-            NSeekValidationError: Invalid index
-            NSeekIndexError: Failed to retrieve vector
-        """
-        try:
-            if not isinstance(idx, (int, np.integer)):
-                raise NSeekValidationError("Index must be an integer")
-            
-            idx = int(idx)  # Convert numpy ints
-            
-            if idx < 0:
-                raise NSeekValidationError("Index must be non-negative")
-            
-            if idx >= self.rows:
-                raise NSeekValidationError(f"Index {idx} out of bounds (max: {self.rows - 1})")
-
-            vector = self.engine.get_vector(idx)
-            
-            if not isinstance(vector, list):
-                raise NSeekIndexError("Engine returned invalid vector type")
-            
-            result = np.array(vector, dtype=np.float32)
-            
-            if result.shape != (self.dims,):
-                raise NSeekIndexError(f"Vector shape mismatch: expected ({self.dims},), got {result.shape}")
-            
-            if np.any(~np.isfinite(result)):
-                raise NSeekIndexError(f"Vector at index {idx} contains invalid values")
-            
-            return result
-            
-        except NSeekValidationError:
             raise
-        except Exception as e:
-            logger.error(f"Failed to get vector {idx}: {e}")
-            raise NSeekIndexError(f"Failed to get vector at index {idx}: {e}")
 
-    def health_check(self) -> Dict[str, Any]:
-        """
-        Perform comprehensive health check of the index.
-        
-        Returns:
-            Dict with health status and metrics
-        """
-        try:
-            health = {
-                "status": "healthy",
-                "dims": self.dims,
-                "rows": self.rows,
-                "level": self.level,
-                "normalized": self.normalized,
-                "query_count": self._query_count,
-                "active_queries": self._query_limiter.active_count(),
-                "uptime_seconds": time.time() - self._creation_time,
-                "warnings": []
-            }
-            
-            # Test basic functionality
-            if self.rows > 0:
-                test_vector = self.get_vector(0)
-                if test_vector is None or len(test_vector) != self.dims:
-                    health["status"] = "degraded"
-                    health["warnings"].append("Failed to retrieve test vector")
-                else:
-                    # Test query
-                    test_results = self.query(test_vector, top_k=1)
-                    if not test_results or test_results[0]["idx"] != 0:
-                        health["status"] = "degraded"
-                        health["warnings"].append("Self-query test failed")
-            
-            # Memory usage estimation
-            estimated_memory = self.dims * self.rows * 4
-            health["estimated_memory_mb"] = estimated_memory / (1024 * 1024)
-            
-            if estimated_memory > MEMORY_WARNING_THRESHOLD:
-                health["warnings"].append(f"High memory usage: {health['estimated_memory_mb']:.1f}MB")
-            
-            return health
-            
-        except Exception as e:
-            return {
-                "status": "unhealthy",
-                "error": str(e),
-                "dims": getattr(self, 'dims', 'unknown'),
-                "rows": getattr(self, 'rows', 'unknown'),
-            }
 
-    @property
-    def dims(self) -> int:
-        """Number of vector dimensions."""
-        try:
-            return self.engine.dims()
-        except Exception as e:
-            logger.error(f"Failed to get dims: {e}")
-            raise NSeekIndexError(f"Failed to get dimensions: {e}")
-
-    @property
-    def rows(self) -> int:
-        """Number of vectors in the index."""
-        try:
-            return self.engine.rows()
-        except Exception as e:
-            logger.error(f"Failed to get rows: {e}")
-            raise NSeekIndexError(f"Failed to get row count: {e}")
-
-    @property
-    def stats(self) -> Dict[str, Any]:
-        """Get index statistics."""
-        return {
-            "dims": self.dims,
-            "rows": self.rows,
-            "level": self.level,
-            "normalized": self.normalized,
-            "query_count": self._query_count,
-            "active_queries": self._query_limiter.active_count(),
-            "uptime_seconds": time.time() - self._creation_time,
-        }
-
-    def __repr__(self) -> str:
-        try:
-            return f"NSeek(level='{self.level}', dims={self.dims}, rows={self.rows}, normalized={self.normalized})"
-        except:
-            return f"NSeek(level='{self.level}', status=unknown)"
-    
-    def __len__(self) -> int:
-        """Return number of vectors in index."""
-        return self.rows
-
-    def __enter__(self):
-        """Context manager support."""
-        return self
-    
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager cleanup."""
-        # Cleanup resources if needed
-        with self._lock:
-            logger.debug(f"NSeek context exited after {self._query_count} queries")
+# Backward compatibility aliases
+VectorIndex = VectorSearch  # Legacy name
+NSeek = VectorSearch        # Alternative name

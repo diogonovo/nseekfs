@@ -1,5 +1,5 @@
 [package]
-name = "nseekfs"    # ← CORRIGIR para "nseekfs"
+name = "nseekfs"    
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
